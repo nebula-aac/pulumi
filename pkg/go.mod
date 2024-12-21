@@ -38,7 +38,7 @@ require (
 	github.com/opentracing/opentracing-go v1.2.0
 	github.com/pgavlin/goldmark v1.1.33-0.20200616210433-b5eb04559386
 	github.com/pulumi/inflector v0.1.1
-	github.com/pulumi/pulumi/sdk/v3 v3.143.0
+	github.com/pulumi/pulumi/sdk/v3 v3.144.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.0.0
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3
 	github.com/spf13/cobra v1.8.0
@@ -49,7 +49,7 @@ require (
 	gocloud.dev v0.37.0
 	gocloud.dev/secrets/hashivault v0.37.0
 	golang.org/x/crypto v0.31.0 // indirect
-	golang.org/x/net v0.28.0
+	golang.org/x/net v0.33.0
 	golang.org/x/oauth2 v0.22.0
 	golang.org/x/sync v0.10.0
 	google.golang.org/api v0.169.0
