@@ -73,9 +73,6 @@ func defaultParallel() int32 {
 	return defaultParallel
 }
 
-// intentionally disabling here for cleaner err declaration/assignment.
-//
-//nolint:vetshadow
 func NewUpCmd() *cobra.Command {
 	var debug bool
 	var expectNop bool
@@ -98,6 +95,7 @@ func NewUpCmd() *cobra.Command {
 	var eventLogPath string
 	var parallel int32
 	var refresh string
+	var runProgram bool
 	var showConfig bool
 	var showPolicyRemediations bool
 	var showReplacementSteps bool
@@ -271,7 +269,7 @@ func NewUpCmd() *cobra.Command {
 		// Retrieve the template repo.
 		templateSource := cmdTemplates.New(ctx,
 			templateNameOrURL, cmdTemplates.ScopeAll,
-			workspace.TemplateKindPulumiProject, cmdutil.Interactive())
+			workspace.TemplateKindPulumiProject)
 		defer func() {
 			contract.IgnoreError(templateSource.Close())
 		}()
@@ -451,6 +449,7 @@ func NewUpCmd() *cobra.Command {
 			Parallel:         parallel,
 			Debug:            debug,
 			Refresh:          refreshOption,
+			RefreshProgram:   runProgram,
 			ShowSecrets:      showSecrets,
 			// If we're in experimental mode then we trigger a plan to be generated during the preview phase
 			// which will be constrained to during the update phase.
@@ -570,7 +569,7 @@ func NewUpCmd() *cobra.Command {
 				err = deployment.ValidateUnsupportedRemoteFlags(expectNop, configArray, path, client, jsonDisplay, policyPackPaths,
 					policyPackConfigPaths, refresh, showConfig, showPolicyRemediations, showReplacementSteps, showSames,
 					showReads, suppressOutputs, secretsProvider, &targets, &excludes, replaces, targetReplaces,
-					targetDependents, planFilePath, cmdStack.ConfigFile, false)
+					targetDependents, planFilePath, cmdStack.ConfigFile, runProgram)
 				if err != nil {
 					return err
 				}
@@ -708,6 +707,10 @@ func NewUpCmd() *cobra.Command {
 		"Refresh the state of the stack's resources before this update")
 	cmd.PersistentFlags().Lookup("refresh").NoOptDefVal = "true"
 	cmd.PersistentFlags().BoolVar(
+		&runProgram, "run-program", env.RunProgram.Value(),
+		"Run the program to determine up-to-date state for providers to refresh resources,"+
+			" this only applies if --refresh is set")
+	cmd.PersistentFlags().BoolVar(
 		&showConfig, "show-config", false,
 		"Show configuration keys and variables")
 	cmd.PersistentFlags().BoolVar(
@@ -767,11 +770,6 @@ func NewUpCmd() *cobra.Command {
 		&copilotEnabled, "copilot", false,
 		"Enable Pulumi Copilot's assistance for improved CLI experience and insights."+
 			"(can also be set with PULUMI_COPILOT environment variable)")
-	// hide the copilot-summary flag for now. (Soft-release)
-	contract.AssertNoErrorf(
-		cmd.PersistentFlags().MarkHidden("copilot"),
-		`Could not mark "copilot" as hidden`,
-	)
 
 	// Currently, we can't mix `--target` and `--exclude`.
 	cmd.MarkFlagsMutuallyExclusive("target", "exclude")
