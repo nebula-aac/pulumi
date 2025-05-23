@@ -278,6 +278,7 @@ class Stack:
         replace: Optional[List[str]] = None,
         color: Optional[str] = None,
         on_output: Optional[OnOutput] = None,
+        on_error: Optional[OnOutput] = None,
         on_event: Optional[OnEvent] = None,
         program: Optional[PulumiFn] = None,
         plan: Optional[str] = None,
@@ -292,6 +293,7 @@ class Stack:
         continue_on_error: Optional[bool] = None,
         attach_debugger: Optional[bool] = None,
         refresh: Optional[bool] = None,
+        config_file: Optional[str] = None,
     ) -> UpResult:
         """
         Creates or updates the resources in a stack by executing the program in the Workspace.
@@ -310,6 +312,7 @@ class Stack:
         :param exclude_dependents: Allows ignoring of dependent targets discovered but not specified in the Exclude list.
         :param replace: Specify resources to replace.
         :param on_output: A function to process the stdout stream.
+        :param on_error: A function to process the stderr stream.
         :param on_event: A function to process structured events from the Pulumi event stream.
         :param program: The inline program.
         :param color: Colorize output. Choices are: always, never, raw, auto (default "auto")
@@ -325,6 +328,7 @@ class Stack:
         :param continue_on_error: Continue to perform the update operation despite the occurrence of errors
         :param attach_debugger: Run the process under a debugger, and pause until a debugger is attached
         :param refresh: Refresh the state of the stack's resources against the cloud provider before running up.
+        :param config_file: Path to a Pulumi config file to use for this update.
         :returns: UpResult
         """
         program = program or self.workspace.program
@@ -366,23 +370,25 @@ class Stack:
 
         log_watcher_thread = None
         temp_dir = None
+        stop_event = None
         if on_event:
             log_file, temp_dir = _create_log_file("up")
             args.extend(["--event-log", log_file])
+            stop_event = threading.Event()
             log_watcher_thread = threading.Thread(
-                target=_watch_logs, args=(log_file, on_event)
+                target=_watch_logs, args=(log_file, on_event, stop_event)
             )
             log_watcher_thread.start()
 
         try:
-            up_result = self._run_pulumi_cmd_sync(args, on_output)
+            up_result = self._run_pulumi_cmd_sync(args, on_output, on_error)
             outputs = self.outputs()
             # If it's a remote workspace, explicitly set show_secrets to False to prevent attempting to
             # load the project file.
             summary = self.info(show_secrets and not self._remote)
             assert summary is not None
         finally:
-            _cleanup(temp_dir, log_watcher_thread, on_exit)
+            _cleanup(temp_dir, log_watcher_thread, stop_event, on_exit)
 
         return UpResult(
             stdout=up_result.stdout,
@@ -406,6 +412,7 @@ class Stack:
         replace: Optional[List[str]] = None,
         color: Optional[str] = None,
         on_output: Optional[OnOutput] = None,
+        on_error: Optional[OnOutput] = None,
         on_event: Optional[OnEvent] = None,
         program: Optional[PulumiFn] = None,
         plan: Optional[str] = None,
@@ -419,6 +426,7 @@ class Stack:
         import_file: Optional[str] = None,
         attach_debugger: Optional[bool] = None,
         refresh: Optional[bool] = None,
+        config_file: Optional[str] = None,
     ) -> PreviewResult:
         """
         Performs a dry-run update to a stack, returning pending changes.
@@ -437,6 +445,7 @@ class Stack:
         :param exclude_dependents: Allows ignoring of dependent targets discovered but not specified in the Exclude list.
         :param replace: Specify resources to replace.
         :param on_output: A function to process the stdout stream.
+        :param on_error: A function to process the stderr stream.
         :param on_event: A function to process structured events from the Pulumi event stream.
         :param program: The inline program.
         :param color: Colorize output. Choices are: always, never, raw, auto (default "auto")
@@ -451,6 +460,7 @@ class Stack:
         :param import_file: Save any creates seen during the preview into an import file to use with pulumi import
         :param attach_debugger: Run the process under a debugger, and pause until a debugger is attached
         :param refresh: Refresh the state of the stack's resources against the cloud provider before running preview.
+        :param config_file: Path to a Pulumi config file to use for this update.
         :returns: PreviewResult
         """
         program = program or self.workspace.program
@@ -504,15 +514,16 @@ class Stack:
                 on_event(event)
 
         # Start watching logs in a thread
+        stop_event = threading.Event()
         log_watcher_thread = threading.Thread(
-            target=_watch_logs, args=(log_file, on_event_callback)
+            target=_watch_logs, args=(log_file, on_event_callback, stop_event)
         )
         log_watcher_thread.start()
 
         try:
-            preview_result = self._run_pulumi_cmd_sync(args, on_output)
+            preview_result = self._run_pulumi_cmd_sync(args, on_output, on_error)
         finally:
-            _cleanup(temp_dir, log_watcher_thread, on_exit)
+            _cleanup(temp_dir, log_watcher_thread, stop_event, on_exit)
 
         if not summary_events:
             raise RuntimeError("summary event never found")
@@ -536,6 +547,7 @@ class Stack:
         clear_pending_creates: Optional[bool] = None,
         color: Optional[str] = None,
         on_output: Optional[OnOutput] = None,
+        on_error: Optional[OnOutput] = None,
         on_event: Optional[OnEvent] = None,
         show_secrets: bool = True,
         log_flow: Optional[bool] = None,
@@ -546,6 +558,7 @@ class Stack:
         suppress_outputs: Optional[bool] = None,
         suppress_progress: Optional[bool] = None,
         run_program: Optional[bool] = None,
+        config_file: Optional[str] = None,
     ) -> RefreshResult:
         """
         Compares the current stack’s resource state with the state known to exist in the actual
@@ -562,6 +575,7 @@ class Stack:
         :param expect_no_changes: Return an error if any changes occur during this update.
         :param clear_pending_creates: Clear all pending creates, dropping them from the state.
         :param on_output: A function to process the stdout stream.
+        :param on_error: A function to process the stderr stream.
         :param on_event: A function to process structured events from the Pulumi event stream.
         :param color: Colorize output. Choices are: always, never, raw, auto (default "auto")
         :param show_secrets: Include config secrets in the RefreshResult summary.
@@ -573,6 +587,7 @@ class Stack:
         :param suppress_outputs: Suppress display of stack outputs (in case they contain sensitive values)
         :param suppress_progress: Suppress display of periodic progress dots
         :param run_program: Run the program in the workspace to refresh the stack
+        :param config_file: Path to a Pulumi config file to use for this update.
         :returns: RefreshResult
         """
         extra_args = _parse_extra_args(**locals())
@@ -597,19 +612,21 @@ class Stack:
         args.extend(["--exec-kind", kind])
 
         log_watcher_thread = None
+        stop_event = None
         temp_dir = None
         if on_event:
             log_file, temp_dir = _create_log_file("refresh")
             args.extend(["--event-log", log_file])
+            stop_event = threading.Event()
             log_watcher_thread = threading.Thread(
-                target=_watch_logs, args=(log_file, on_event)
+                target=_watch_logs, args=(log_file, on_event, stop_event)
             )
             log_watcher_thread.start()
 
         try:
-            refresh_result = self._run_pulumi_cmd_sync(args, on_output)
+            refresh_result = self._run_pulumi_cmd_sync(args, on_output, on_error)
         finally:
-            _cleanup(temp_dir, log_watcher_thread)
+            _cleanup(temp_dir, log_watcher_thread, stop_event)
 
         # If it's a remote workspace, explicitly set show_secrets to False to prevent attempting to
         # load the project file.
@@ -623,6 +640,7 @@ class Stack:
         self,
         stack_name: str,
         on_output: Optional[OnOutput] = None,
+        on_error: Optional[OnOutput] = None,
         show_secrets: bool = False,
     ) -> RenameResult:
         """
@@ -630,6 +648,7 @@ class Stack:
 
         :param stack_name: The new name for the stack.
         :param on_output: A function to process the stdout stream.
+        :param on_error: A function to process the stderr stream.
         :param show_secrets: Include config secrets in the RefreshResult summary.
         :returns: RenameResult
         """
@@ -638,7 +657,7 @@ class Stack:
         args.extend(extra_args)
 
         args.extend(self._remote_args())
-        rename_result = self._run_pulumi_cmd_sync(args, on_output)
+        rename_result = self._run_pulumi_cmd_sync(args, on_output, on_error)
 
         if self._remote and show_secrets:
             raise RuntimeError("can't enable `showSecrets` for remote workspaces")
@@ -657,6 +676,7 @@ class Stack:
         target_dependents: Optional[bool] = None,
         color: Optional[str] = None,
         on_output: Optional[OnOutput] = None,
+        on_error: Optional[OnOutput] = None,
         on_event: Optional[OnEvent] = None,
         show_secrets: bool = True,
         log_flow: Optional[bool] = None,
@@ -672,6 +692,7 @@ class Stack:
         refresh: Optional[bool] = None,
         preview_only: Optional[bool] = None,
         run_program: Optional[bool] = None,
+        config_file: Optional[str] = None,
     ) -> DestroyResult:
         """
         Destroy deletes all resources in a stack, leaving all history and configuration intact.
@@ -682,6 +703,7 @@ class Stack:
         :param target: Specify an exclusive list of resource URNs to destroy.
         :param target_dependents: Allows updating of dependent targets discovered but not specified in the Target list.
         :param on_output: A function to process the stdout stream.
+        :param on_error: A function to process the stderr stream.
         :param on_event: A function to process structured events from the Pulumi event stream.
         :param color: Colorize output. Choices are: always, never, raw, auto (default "auto")
         :param show_secrets: Include config secrets in the DestroyResult summary.
@@ -698,6 +720,7 @@ class Stack:
         :param refresh: Refresh the state of the stack's resources against the cloud provider before running destroy.
         :param preview_only: Only show a preview of the destroy, but don't perform the destroy itself
         :param run_program: Run the program in the workspace to destroy the stack
+        :param config_file: Path to a Pulumi config file to use for this update.
         :returns: DestroyResult
         """
         extra_args = _parse_extra_args(**locals())
@@ -721,19 +744,21 @@ class Stack:
         args.extend(["--exec-kind", kind])
 
         log_watcher_thread = None
+        stop_event = None
         temp_dir = None
         if on_event:
             log_file, temp_dir = _create_log_file("destroy")
             args.extend(["--event-log", log_file])
+            stop_event = threading.Event()
             log_watcher_thread = threading.Thread(
-                target=_watch_logs, args=(log_file, on_event)
+                target=_watch_logs, args=(log_file, on_event, stop_event)
             )
             log_watcher_thread.start()
 
         try:
-            destroy_result = self._run_pulumi_cmd_sync(args, on_output)
+            destroy_result = self._run_pulumi_cmd_sync(args, on_output, on_error)
         finally:
-            _cleanup(temp_dir, log_watcher_thread)
+            _cleanup(temp_dir, log_watcher_thread, stop_event)
 
         # If it's a remote workspace, explicitly set show_secrets to False to prevent attempting to
         # load the project file.
@@ -761,6 +786,7 @@ class Stack:
         converter: Optional[str] = None,
         converter_args: Optional[List[str]] = None,
         on_output: Optional[OnOutput] = None,
+        on_error: Optional[OnOutput] = None,
         show_secrets: bool = True,
     ) -> ImportResult:
         """
@@ -779,6 +805,7 @@ class Stack:
         :param converter: The converter plugin to use for the import operation
         :param converter_args: Additional arguments to pass to the converter plugin
         :param on_output: A function to process the stdout stream.
+        :param on_error: A function to process the stderr stream.
         :param show_secrets: Include config secrets in the ImportResult summary.
         """
         args = ["import", "--yes", "--skip-preview"]
@@ -809,7 +836,7 @@ class Stack:
                     args.append("--")
                     args.extend(converter_args)
 
-            import_result = self._run_pulumi_cmd_sync(args, on_output)
+            import_result = self._run_pulumi_cmd_sync(args, on_output, on_error)
             summary = self.info(show_secrets and not self._remote)
             generated_code = ""
             if generate_code is not False:
@@ -1043,7 +1070,10 @@ class Stack:
         return self.workspace.import_stack(self.name, state)
 
     def _run_pulumi_cmd_sync(
-        self, args: List[str], on_output: Optional[OnOutput] = None
+        self,
+        args: List[str],
+        on_output: Optional[OnOutput] = None,
+        on_error: Optional[OnOutput] = None,
     ) -> CommandResult:
         envs = {"PULUMI_DEBUG_COMMANDS": "true"}
         if self._remote:
@@ -1056,7 +1086,7 @@ class Stack:
         args.extend(additional_args)
         args.extend(["--stack", self.name])
         result = self.workspace.pulumi_command.run(
-            args, self.workspace.work_dir, envs, on_output
+            args, self.workspace.work_dir, envs, on_output, on_error
         )
         self.workspace.post_command_callback(self.name)
         return result
@@ -1108,6 +1138,7 @@ def _parse_extra_args(**kwargs) -> List[str]:
     continue_on_error: Optional[bool] = kwargs.get("continue_on_error")
     attach_debugger: Optional[bool] = kwargs.get("attach_debugger")
     refresh: Optional[bool] = kwargs.get("refresh")
+    config_file: Optional[str] = kwargs.get("config_file")
 
     if message:
         extra_args.extend(["--message", message])
@@ -1162,6 +1193,8 @@ def _parse_extra_args(**kwargs) -> List[str]:
         extra_args.extend(["--attach-debugger"])
     if refresh:
         extra_args.extend(["--refresh"])
+    if config_file:
+        extra_args.extend(["--config-file", config_file])
     return extra_args
 
 
@@ -1195,15 +1228,21 @@ def _create_log_file(command: str) -> Tuple[str, tempfile.TemporaryDirectory]:
     return filepath, log_dir
 
 
-def _watch_logs(filename: str, callback: OnEvent):
+def _watch_logs(
+    filename: str, callback: OnEvent, stopEvent: Optional[threading.Event] = None
+):
     partial_line = ""
     with open(filename, encoding="utf-8") as f:
         while True:
             line = f.readline()
 
-            # sleep if file hasn't been updated
+            # If the line hasn't updated, check if we should stop the thread.
             if not line:
-                time.sleep(0.1)
+                if stopEvent:
+                    if stopEvent.wait(0.1):
+                        break
+                else:
+                    time.sleep(0.1)
                 continue
 
             # we don't have a complete line yet.  sleep and try again.
@@ -1226,14 +1265,21 @@ def _watch_logs(filename: str, callback: OnEvent):
 def _cleanup(
     temp_dir: Optional[tempfile.TemporaryDirectory],
     thread: Optional[threading.Thread],
+    stop_event: Optional[threading.Event],
     on_exit_fn: Optional[Callable[[], None]] = None,
 ) -> None:
     # If there's an on_exit function, execute it (used in preview/up to shut down server)
     if on_exit_fn:
         on_exit_fn()
-    # If we started a thread to watch logs, wait for it to terminate, timing out after 5 seconds.
+    # If we started a thread to watch logs, wait for it to terminate. The wait times out
+    # after 5 seconds. This gives the thread some time to read the events log.
     if thread:
         thread.join(5)
+    # If an error occured before the actual Pulumi operation started, we will
+    # never write a CancelEvent to the events log, and the thread will continue
+    # polling forever. Set the stop_event to stop the polling loop.
+    if stop_event:
+        stop_event.set()
     # If we created a temp_dir for the logs, clean up.
     if temp_dir:
         temp_dir.cleanup()

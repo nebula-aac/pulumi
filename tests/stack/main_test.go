@@ -1,4 +1,4 @@
-// Copyright 2020, Pulumi Corporation.
+// Copyright 2025, Pulumi Corporation.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,22 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package toolchain
+package stack
 
 import (
 	"os"
-	"syscall"
+	"testing"
+
+	"github.com/pulumi/pulumi/tests/testutil"
 )
 
-// This is to trigger a workaround for https://github.com/golang/go/issues/42919
-func needsPythonShim(pythonPath string) bool {
-	info, err := os.Lstat(pythonPath)
-	if err != nil {
-		panic(err) // Should never happen!
-	}
-	if sys, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
-		return sys.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 &&
-			sys.FileAttributes&syscall.FILE_ATTRIBUTE_ARCHIVE != 0
-	}
-	return false
+func TestMain(m *testing.M) {
+	testutil.SetupPulumiBinary()
+
+	code := m.Run()
+	os.Exit(code)
 }

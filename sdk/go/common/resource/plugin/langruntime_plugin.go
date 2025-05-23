@@ -107,7 +107,7 @@ func NewLanguageRuntime(host Host, ctx *Context, runtime, workingDirectory strin
 		client = pulumirpc.NewLanguageRuntimeClient(plug.Conn)
 	} else {
 		path, err := workspace.GetPluginPath(
-			ctx.Diag,
+			ctx.baseContext, ctx.Diag,
 			workspace.PluginSpec{
 				Name: strings.ReplaceAll(runtime, tokens.QNameDelimiter, "_"),
 				Kind: apitype.LanguagePlugin,
@@ -135,6 +135,7 @@ func NewLanguageRuntime(host Host, ctx *Context, runtime, workingDirectory strin
 			nil, /*env*/
 			testConnection,
 			langRuntimePluginDialOptions(ctx, runtime),
+			host.AttachDebugger(DebugSpec{Type: DebugTypePlugin, Name: runtime}),
 		)
 		if err != nil {
 			return nil, err
@@ -487,6 +488,7 @@ func (h *langhost) InstallDependencies(request InstallDependenciesRequest) (
 		IsTerminal:              cmdutil.GetGlobalColorization() != colors.Never,
 		Info:                    minfo,
 		UseLanguageVersionTools: request.UseLanguageVersionTools,
+		IsPlugin:                request.IsPlugin,
 	})
 	if err != nil {
 		rpcError := rpcerror.Convert(err)
@@ -665,11 +667,12 @@ func (h *langhost) RunPlugin(info RunPluginInfo) (io.Reader, io.Reader, context.
 	ctx, kill := context.WithCancel(h.ctx.Request())
 
 	resp, err := h.client.RunPlugin(ctx, &pulumirpc.RunPluginRequest{
-		Pwd:  info.WorkingDirectory,
-		Args: info.Args,
-		Env:  info.Env,
-		Info: minfo,
-		Kind: info.Kind,
+		Pwd:            info.WorkingDirectory,
+		Args:           info.Args,
+		Env:            info.Env,
+		Info:           minfo,
+		Kind:           info.Kind,
+		AttachDebugger: info.AttachDebugger,
 	})
 	if err != nil {
 		// If there was an error starting the plugin kill the context for this request to ensure any lingering
@@ -848,6 +851,7 @@ func languageHandshake(
 			logging.V(7).Infof("Handshake: not supported by '%v'", bin)
 			return nil, nil
 		}
+		return nil, fmt.Errorf("failed to handshake with '%v': %w", bin, err)
 	}
 
 	logging.V(7).Infof("Handshake: success [%v]", bin)

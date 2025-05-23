@@ -21,6 +21,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -73,9 +74,6 @@ func defaultParallel() int32 {
 	return defaultParallel
 }
 
-// intentionally disabling here for cleaner err declaration/assignment.
-//
-//nolint:vetshadow
 func NewUpCmd() *cobra.Command {
 	var debug bool
 	var expectNop bool
@@ -98,6 +96,7 @@ func NewUpCmd() *cobra.Command {
 	var eventLogPath string
 	var parallel int32
 	var refresh string
+	var runProgram bool
 	var showConfig bool
 	var showPolicyRemediations bool
 	var showReplacementSteps bool
@@ -119,7 +118,7 @@ func NewUpCmd() *cobra.Command {
 	var targetDependents bool
 	var excludeDependents bool
 	var planFilePath string
-	var attachDebugger bool
+	var attachDebugger []string
 
 	// Flags for Copilot.
 	var copilotEnabled bool
@@ -245,7 +244,7 @@ func NewUpCmd() *cobra.Command {
 			SecretsManager:     sm,
 			SecretsProvider:    stack.DefaultSecretsProvider,
 			Scopes:             backend.CancellationScopes,
-		})
+		}, nil /* events */)
 		switch {
 		case err == context.Canceled:
 			return errors.New("update cancelled")
@@ -271,7 +270,7 @@ func NewUpCmd() *cobra.Command {
 		// Retrieve the template repo.
 		templateSource := cmdTemplates.New(ctx,
 			templateNameOrURL, cmdTemplates.ScopeAll,
-			workspace.TemplateKindPulumiProject, cmdutil.Interactive())
+			workspace.TemplateKindPulumiProject)
 		defer func() {
 			contract.IgnoreError(templateSource.Close())
 		}()
@@ -451,6 +450,7 @@ func NewUpCmd() *cobra.Command {
 			Parallel:         parallel,
 			Debug:            debug,
 			Refresh:          refreshOption,
+			RefreshProgram:   runProgram,
 			ShowSecrets:      showSecrets,
 			// If we're in experimental mode then we trigger a plan to be generated during the preview phase
 			// which will be constrained to during the update phase.
@@ -477,7 +477,7 @@ func NewUpCmd() *cobra.Command {
 			SecretsManager:     sm,
 			SecretsProvider:    stack.DefaultSecretsProvider,
 			Scopes:             backend.CancellationScopes,
-		})
+		}, nil /* events */)
 		switch {
 		case err == context.Canceled:
 			return errors.New("update cancelled")
@@ -526,6 +526,11 @@ func NewUpCmd() *cobra.Command {
 				)
 			}
 
+			err := validateAttachDebuggerFlag(attachDebugger)
+			if err != nil {
+				return err
+			}
+
 			opts, err := updateFlagsToOptions(interactive, skipPreview, yes, false /* previewOnly */)
 			if err != nil {
 				return err
@@ -570,7 +575,7 @@ func NewUpCmd() *cobra.Command {
 				err = deployment.ValidateUnsupportedRemoteFlags(expectNop, configArray, path, client, jsonDisplay, policyPackPaths,
 					policyPackConfigPaths, refresh, showConfig, showPolicyRemediations, showReplacementSteps, showSames,
 					showReads, suppressOutputs, secretsProvider, &targets, &excludes, replaces, targetReplaces,
-					targetDependents, planFilePath, cmdStack.ConfigFile, false)
+					targetDependents, planFilePath, cmdStack.ConfigFile, runProgram)
 				if err != nil {
 					return err
 				}
@@ -708,6 +713,10 @@ func NewUpCmd() *cobra.Command {
 		"Refresh the state of the stack's resources before this update")
 	cmd.PersistentFlags().Lookup("refresh").NoOptDefVal = "true"
 	cmd.PersistentFlags().BoolVar(
+		&runProgram, "run-program", env.RunProgram.Value(),
+		"Run the program to determine up-to-date state for providers to refresh resources,"+
+			" this only applies if --refresh is set")
+	cmd.PersistentFlags().BoolVar(
 		&showConfig, "show-config", false,
 		"Show configuration keys and variables")
 	cmd.PersistentFlags().BoolVar(
@@ -750,9 +759,11 @@ func NewUpCmd() *cobra.Command {
 		&continueOnError, "continue-on-error", env.ContinueOnError.Value(),
 		"Continue updating resources even if an error is encountered "+
 			"(can also be set with PULUMI_CONTINUE_ON_ERROR environment variable)")
-	cmd.PersistentFlags().BoolVar(
-		&attachDebugger, "attach-debugger", false,
-		"Enable the ability to attach a debugger to the program being executed")
+	//nolint:lll // long description
+	cmd.PersistentFlags().StringArrayVar(
+		&attachDebugger, "attach-debugger", []string{},
+		"Enable the ability to attach a debugger to the program and source based plugins being executed. Can limit debug type to 'program', 'plugins', 'plugin:<name>' or 'all'.")
+	cmd.Flag("attach-debugger").NoOptDefVal = "program"
 
 	cmd.PersistentFlags().StringVar(
 		&planFilePath, "plan", "",
@@ -767,11 +778,6 @@ func NewUpCmd() *cobra.Command {
 		&copilotEnabled, "copilot", false,
 		"Enable Pulumi Copilot's assistance for improved CLI experience and insights."+
 			"(can also be set with PULUMI_COPILOT environment variable)")
-	// hide the copilot-summary flag for now. (Soft-release)
-	contract.AssertNoErrorf(
-		cmd.PersistentFlags().MarkHidden("copilot"),
-		`Could not mark "copilot" as hidden`,
-	)
 
 	// Currently, we can't mix `--target` and `--exclude`.
 	cmd.MarkFlagsMutuallyExclusive("target", "exclude")
@@ -810,6 +816,16 @@ func validatePolicyPackConfig(policyPackPaths []string, policyPackConfigPaths []
 				`the number of "--policy-pack-config" flags must match the number of "--policy-pack" flags`)
 		}
 	}
+	return nil
+}
+
+func validateAttachDebuggerFlag(args []string) error {
+	for _, arg := range args {
+		if arg != "program" && arg != "plugins" && arg != "all" && !strings.HasPrefix(arg, "plugin:") {
+			return fmt.Errorf("invalid --attach-debugger flag value: %s", arg)
+		}
+	}
+
 	return nil
 }
 

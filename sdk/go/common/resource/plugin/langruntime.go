@@ -104,6 +104,7 @@ func (info ProgramInfo) Marshal() (*pulumirpc.ProgramInfo, error) {
 type InstallDependenciesRequest struct {
 	Info                    ProgramInfo
 	UseLanguageVersionTools bool
+	IsPlugin                bool
 }
 
 func (options InstallDependenciesRequest) String() string {
@@ -189,6 +190,7 @@ type RunPluginInfo struct {
 	Args             []string
 	Env              []string
 	Kind             string
+	AttachDebugger   bool
 }
 
 // RunInfo contains all of the information required to perform a plan or deployment operation.

@@ -236,6 +236,7 @@ func newPlugin[T any](
 	env []string,
 	handshake func(context.Context, string, string, *grpc.ClientConn) (*T, error),
 	dialOptions []grpc.DialOption,
+	attachDebugger bool,
 ) (*plugin, *T, error) {
 	if logging.V(9) {
 		var argstr string
@@ -261,7 +262,7 @@ func newPlugin[T any](
 	defer tracingSpan.Finish()
 
 	// Try to execute the binary.
-	plug, err := execPlugin(ctx, bin, prefix, kind, args, pwd, env)
+	plug, err := execPlugin(ctx, bin, prefix, kind, args, pwd, env, attachDebugger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load plugin %s: %w", bin, err)
 	}
@@ -417,7 +418,7 @@ func parsePort(portString string) (int, error) {
 
 // execPlugin starts the plugin executable.
 func execPlugin(ctx *Context, bin, prefix string, kind apitype.PluginKind,
-	pluginArgs []string, pwd string, env []string,
+	pluginArgs []string, pwd string, env []string, attachDebugger bool,
 ) (*plugin, error) {
 	args := buildPluginArguments(pluginArgumentOptions{
 		pluginArgs:      pluginArgs,
@@ -470,6 +471,7 @@ func execPlugin(ctx *Context, bin, prefix string, kind apitype.PluginKind,
 			Args:             args,
 			Env:              env,
 			Kind:             string(kind),
+			AttachDebugger:   attachDebugger,
 		})
 		if err != nil {
 			return nil, err
@@ -511,12 +513,31 @@ func execPlugin(ctx *Context, bin, prefix string, kind apitype.PluginKind,
 		return nil, err
 	}
 
-	kill := func() error {
-		var result *multierror.Error
-
+	kill := sync.OnceValue(func() error {
 		// On each platform, plugins are not loaded directly, instead a shell launches each plugin as a child process, so
 		// instead we need to kill all the children of the PID we have recorded, as well. Otherwise we will block waiting
 		// for the child processes to close.
+
+		// Try to shut down gracefully first, so the plugins have a chance to clean up.
+		// If that fails we'll just kill the process.
+		cmdutil.InterruptChildren(cmd.Process.Pid)
+
+		// Give the process 5 seconds to shut down, or kill it forcibly.
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Wait()
+		}()
+		select {
+		case <-done:
+			return nil
+		case <-timer.C:
+		}
+
+		// We failed to clean up the process within the allocated time.  Shut it down forcibly.
+		var result *multierror.Error
+
 		if err := cmdutil.KillChildren(cmd.Process.Pid); err != nil {
 			result = multierror.Append(result, err)
 		}
@@ -527,7 +548,7 @@ func execPlugin(ctx *Context, bin, prefix string, kind apitype.PluginKind,
 		}
 
 		return result.ErrorOrNil()
-	}
+	})
 
 	return &plugin{
 		Bin:    bin,
