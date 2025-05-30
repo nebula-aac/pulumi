@@ -136,10 +136,12 @@ func (p *providerServer) Handshake(
 	req *pulumirpc.ProviderHandshakeRequest,
 ) (*pulumirpc.ProviderHandshakeResponse, error) {
 	res, err := p.provider.Handshake(ctx, ProviderHandshakeRequest{
-		EngineAddress:    req.EngineAddress,
-		RootDirectory:    req.RootDirectory,
-		ProgramDirectory: req.ProgramDirectory,
-		ConfigureWithUrn: req.ConfigureWithUrn,
+		EngineAddress:               req.EngineAddress,
+		RootDirectory:               req.RootDirectory,
+		ProgramDirectory:            req.ProgramDirectory,
+		ConfigureWithUrn:            req.ConfigureWithUrn,
+		SupportsViews:               req.SupportsViews,
+		SupportsRefreshBeforeUpdate: req.SupportsRefreshBeforeUpdate,
 	})
 	if err != nil {
 		return nil, err
@@ -546,12 +548,14 @@ func (p *providerServer) Create(ctx context.Context, req *pulumirpc.CreateReques
 	}
 
 	resp, err := p.provider.Create(ctx, CreateRequest{
-		URN:        urn,
-		Name:       req.Name,
-		Type:       tokens.Type(req.Type),
-		Properties: inputs,
-		Timeout:    req.GetTimeout(),
-		Preview:    req.GetPreview(),
+		URN:                   urn,
+		Name:                  req.Name,
+		Type:                  tokens.Type(req.Type),
+		Properties:            inputs,
+		Timeout:               req.GetTimeout(),
+		Preview:               req.GetPreview(),
+		ResourceStatusAddress: req.GetResourceStatusAddress(),
+		ResourceStatusToken:   req.GetResourceStatusToken(),
 	})
 	if err != nil {
 		return nil, err
@@ -563,8 +567,9 @@ func (p *providerServer) Create(ctx context.Context, req *pulumirpc.CreateReques
 	}
 
 	return &pulumirpc.CreateResponse{
-		Id:         string(resp.ID),
-		Properties: rpcState,
+		Id:                  string(resp.ID),
+		Properties:          rpcState,
+		RefreshBeforeUpdate: resp.RefreshBeforeUpdate,
 	}, nil
 }
 
@@ -595,13 +600,21 @@ func (p *providerServer) Read(ctx context.Context, req *pulumirpc.ReadRequest) (
 		return nil, err
 	}
 
+	oldViews, err := unmarshalViews(req.GetOldViews(), p.unmarshalOptions("oldViews", false /* keepOutputValues */))
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := p.provider.Read(ctx, ReadRequest{
-		URN:    urn,
-		Name:   req.Name,
-		Type:   tokens.Type(req.Type),
-		ID:     requestID,
-		Inputs: inputs,
-		State:  state,
+		URN:                   urn,
+		Name:                  req.Name,
+		Type:                  tokens.Type(req.Type),
+		ID:                    requestID,
+		Inputs:                inputs,
+		State:                 state,
+		ResourceStatusAddress: req.GetResourceStatusAddress(),
+		ResourceStatusToken:   req.GetResourceStatusToken(),
+		OldViews:              oldViews,
 	})
 	if err != nil {
 		return nil, err
@@ -618,9 +631,10 @@ func (p *providerServer) Read(ctx context.Context, req *pulumirpc.ReadRequest) (
 	}
 
 	return &pulumirpc.ReadResponse{
-		Id:         string(resp.ID),
-		Properties: rpcState,
-		Inputs:     rpcInputs,
+		Id:                  string(resp.ID),
+		Properties:          rpcState,
+		Inputs:              rpcInputs,
+		RefreshBeforeUpdate: resp.RefreshBeforeUpdate,
 	}, nil
 }
 
@@ -659,17 +673,26 @@ func (p *providerServer) Update(ctx context.Context, req *pulumirpc.UpdateReques
 		return nil, err
 	}
 
+	oldViews, err := unmarshalViews(
+		req.GetOldViews(), p.unmarshalOptions("oldViews", false /* keepOutputValues */))
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := p.provider.Update(ctx, UpdateRequest{
-		URN:           urn,
-		Name:          req.Name,
-		Type:          tokens.Type(req.Type),
-		ID:            id,
-		OldInputs:     oldInputs,
-		OldOutputs:    oldOutputs,
-		NewInputs:     newInputs,
-		Timeout:       req.GetTimeout(),
-		IgnoreChanges: req.GetIgnoreChanges(),
-		Preview:       req.GetPreview(),
+		URN:                   urn,
+		Name:                  req.Name,
+		Type:                  tokens.Type(req.Type),
+		ID:                    id,
+		OldInputs:             oldInputs,
+		OldOutputs:            oldOutputs,
+		NewInputs:             newInputs,
+		Timeout:               req.GetTimeout(),
+		IgnoreChanges:         req.GetIgnoreChanges(),
+		Preview:               req.GetPreview(),
+		ResourceStatusAddress: req.GetResourceStatusAddress(),
+		ResourceStatusToken:   req.GetResourceStatusToken(),
+		OldViews:              oldViews,
 	})
 	if err != nil {
 		return nil, err
@@ -680,7 +703,10 @@ func (p *providerServer) Update(ctx context.Context, req *pulumirpc.UpdateReques
 		return nil, err
 	}
 
-	return &pulumirpc.UpdateResponse{Properties: rpcState}, nil
+	return &pulumirpc.UpdateResponse{
+		Properties:          rpcState,
+		RefreshBeforeUpdate: resp.RefreshBeforeUpdate,
+	}, nil
 }
 
 func (p *providerServer) Delete(ctx context.Context, req *pulumirpc.DeleteRequest) (*emptypb.Empty, error) {
@@ -710,14 +736,22 @@ func (p *providerServer) Delete(ctx context.Context, req *pulumirpc.DeleteReques
 		return nil, err
 	}
 
+	oldViews, err := unmarshalViews(req.GetOldViews(), p.unmarshalOptions("oldViews", false /* keepOutputValues */))
+	if err != nil {
+		return nil, err
+	}
+
 	if _, err = p.provider.Delete(ctx, DeleteRequest{
-		URN:     urn,
-		Name:    req.Name,
-		Type:    tokens.Type(req.Type),
-		ID:      id,
-		Inputs:  inputs,
-		Outputs: outputs,
-		Timeout: req.GetTimeout(),
+		URN:                   urn,
+		Name:                  req.Name,
+		Type:                  tokens.Type(req.Type),
+		ID:                    id,
+		Inputs:                inputs,
+		Outputs:               outputs,
+		Timeout:               req.GetTimeout(),
+		ResourceStatusAddress: req.GetResourceStatusAddress(),
+		ResourceStatusToken:   req.GetResourceStatusToken(),
+		OldViews:              oldViews,
 	}); err != nil {
 		return nil, err
 	}
@@ -948,4 +982,51 @@ func (p *providerServer) GetMappings(ctx context.Context,
 		return nil, err
 	}
 	return &pulumirpc.GetMappingsResponse{Providers: providers.Keys}, nil
+}
+
+// unmarshalViews is a helper that unmarshals a slice of views from gRPC into a slice of View structs.
+func unmarshalViews(views []*pulumirpc.View, opts MarshalOptions) ([]View, error) {
+	if len(views) == 0 {
+		return nil, nil
+	}
+
+	result := make([]View, len(views))
+	for i, v := range views {
+		uv, err := unmarshalView(v, opts)
+		if err != nil {
+			return nil, err
+		}
+		result[i] = uv
+	}
+	return result, nil
+}
+
+// unmarshalView is a helper that unmarshals a single view from gRPC into a View struct.
+func unmarshalView(v *pulumirpc.View, opts MarshalOptions) (View, error) {
+	var err error
+
+	var inputs resource.PropertyMap
+	if v.Inputs != nil {
+		inputs, err = UnmarshalProperties(v.Inputs, opts)
+		if err != nil {
+			return View{}, err
+		}
+	}
+
+	var outputs resource.PropertyMap
+	if v.Outputs != nil {
+		outputs, err = UnmarshalProperties(v.Outputs, opts)
+		if err != nil {
+			return View{}, err
+		}
+	}
+
+	return View{
+		Type:       tokens.Type(v.Type),
+		Name:       v.Name,
+		ParentType: tokens.Type(v.ParentType),
+		ParentName: v.ParentName,
+		Inputs:     inputs,
+		Outputs:    outputs,
+	}, nil
 }

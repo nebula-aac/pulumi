@@ -45,7 +45,7 @@ type RequiredPolicy interface {
 	// Version of the PolicyPack.
 	Version() string
 	// Install will install the PolicyPack locally, returning the path it was installed to.
-	Install(ctx context.Context) (string, error)
+	Install(ctx *plugin.Context) (string, error)
 	// Config returns the PolicyPack's configuration.
 	Config() map[string]*json.RawMessage
 }
@@ -189,8 +189,8 @@ type UpdateOptions struct {
 	// ContinueOnError is true if the engine should continue processing resources after an error is encountered.
 	ContinueOnError bool
 
-	// AttachDebugger to launch the language host in debug mode.
-	AttachDebugger bool
+	// AttachDebugger is the list of things to debug.  This can be "program", "all", "plugins", or "plugin:<plugin-name>".
+	AttachDebugger []string
 
 	// Autonamer can resolve user's preference for custom autonaming options for a given resource.
 	Autonamer autonaming.Autonamer
@@ -307,7 +307,7 @@ func installPlugins(
 
 // installAndLoadPolicyPlugins loads and installs all requird policy plugins and packages as well as any
 // local policy packs. It returns fully populated metadata about those policy plugins.
-func installAndLoadPolicyPlugins(ctx context.Context, plugctx *plugin.Context,
+func installAndLoadPolicyPlugins(plugctx *plugin.Context,
 	deployOpts *deploymentOptions, analyzerOpts *plugin.PolicyAnalyzerOptions,
 ) error {
 	var allValidationErrors []string
@@ -324,7 +324,7 @@ func installAndLoadPolicyPlugins(ctx context.Context, plugctx *plugin.Context,
 	// Install and load required policy packs.
 	for _, policy := range deployOpts.RequiredPolicies {
 		deployOpts.Events.PolicyLoadEvent()
-		policyPath, err := policy.Install(ctx)
+		policyPath, err := policy.Install(plugctx)
 		if err != nil {
 			return err
 		}
@@ -415,6 +415,7 @@ func installAndLoadPolicyPlugins(ctx context.Context, plugctx *plugin.Context,
 				configFromFile, err = resourceanalyzer.LoadPolicyPackConfigFromFile(pack.Config)
 				if err != nil {
 					errs <- err
+					plugctx.Diag.Infof(diag.Message("", "LoadPolicyPackConfigFromFile %s"), err.Error())
 					return
 				}
 			}
@@ -422,11 +423,13 @@ func installAndLoadPolicyPlugins(ctx context.Context, plugctx *plugin.Context,
 				analyzerInfo.Policies, analyzerInfo.InitialConfig, configFromFile)
 			if err != nil {
 				errs <- fmt.Errorf("reconciling policy config for %q at %q: %w", analyzerInfo.Name, pack.Path, err)
+				plugctx.Diag.Infof(diag.Message("", "ReconcilePolicyPackConfig %s"), err.Error())
 				return
 			}
 			appendValidationErrors(analyzerInfo.Name, analyzerInfo.Version, validationErrors)
 			if err = analyzer.Configure(config); err != nil {
 				errs <- fmt.Errorf("configuring policy pack %q at %q: %w", analyzerInfo.Name, pack.Path, err)
+				plugctx.Diag.Infof(diag.Message("", "Configure %s"), err.Error())
 				return
 			}
 		}(i, pack)
@@ -499,7 +502,7 @@ func newUpdateSource(ctx context.Context,
 		Config:       pconfig,
 		DryRun:       opts.DryRun,
 	}
-	if err := installAndLoadPolicyPlugins(ctx, plugctx, opts, analyzerOpts); err != nil {
+	if err := installAndLoadPolicyPlugins(plugctx, opts, analyzerOpts); err != nil {
 		return nil, err
 	}
 
