@@ -35,9 +35,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
-// intentionally disabling here for cleaner err declaration/assignment.
-//
-//nolint:vetshadow
 func NewWatchCmd() *cobra.Command {
 	var debug bool
 	var message string
@@ -100,6 +97,7 @@ func NewWatchCmd() *cobra.Command {
 
 			s, err := cmdStack.RequireStack(
 				ctx,
+				cmdutil.Diag(),
 				ws,
 				cmdBackend.DefaultLoginManager,
 				stackName,
@@ -111,7 +109,7 @@ func NewWatchCmd() *cobra.Command {
 			}
 
 			// Save any config values passed via flags.
-			if err := parseAndSaveConfigArray(ws, s, configArray, configPath); err != nil {
+			if err := parseAndSaveConfigArray(ctx, cmdutil.Diag(), ws, s, configArray, configPath); err != nil {
 				return err
 			}
 
@@ -120,7 +118,7 @@ func NewWatchCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, sm, err := config.GetStackConfiguration(ctx, ssml, s, proj)
+			cfg, sm, err := config.GetStackConfiguration(ctx, cmdutil.Diag(), ssml, s, proj)
 			if err != nil {
 				return fmt.Errorf("getting stack configuration: %w", err)
 			}

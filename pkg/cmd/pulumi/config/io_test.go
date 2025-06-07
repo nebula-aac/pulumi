@@ -32,6 +32,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
@@ -63,6 +64,7 @@ func TestGetStackConfigurationDoesNotGetLatestConfiguration(t *testing.T) {
 	// Don't check return values. Just check that GetLatestConfiguration() is not called.
 	_, _, _ = GetStackConfiguration(
 		context.Background(),
+		nil, /*sink*/
 		stack.SecretsManagerLoader{},
 		&backend.MockStack{
 			RefF: func() backend.StackReference {
@@ -72,6 +74,12 @@ func TestGetStackConfigurationDoesNotGetLatestConfiguration(t *testing.T) {
 					ProjectV:            "project",
 					FullyQualifiedNameV: tokens.QName("org/project/name"),
 				}
+			},
+			LoadRemoteF: func(ctx context.Context, project *workspace.Project) (*workspace.ProjectStack, error) {
+				return workspace.LoadProjectStack(cmdutil.Diag(), project, "Pulumi.name.yaml")
+			},
+			DefaultSecretManagerF: func(info *workspace.ProjectStack) (secrets.Manager, error) {
+				return nil, nil
 			},
 			BackendF: func() backend.Backend {
 				return &backend.MockBackend{
@@ -92,6 +100,7 @@ func TestGetStackConfigurationOrLatest(t *testing.T) {
 	called := false
 	_, _, _ = GetStackConfigurationOrLatest(
 		context.Background(),
+		nil, /*sink*/
 		stack.SecretsManagerLoader{},
 		&backend.MockStack{
 			RefF: func() backend.StackReference {
@@ -101,6 +110,9 @@ func TestGetStackConfigurationOrLatest(t *testing.T) {
 					ProjectV:            "project",
 					FullyQualifiedNameV: tokens.QName("org/project/name"),
 				}
+			},
+			LoadRemoteF: func(ctx context.Context, project *workspace.Project) (*workspace.ProjectStack, error) {
+				return nil, workspace.ErrProjectNotFound
 			},
 			DefaultSecretManagerF: func(info *workspace.ProjectStack) (secrets.Manager, error) {
 				return nil, nil

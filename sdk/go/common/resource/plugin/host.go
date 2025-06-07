@@ -15,6 +15,7 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +36,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
-	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
 
 // A Host hosts provider plugins and makes them easily accessible by package name.
@@ -92,7 +92,10 @@ type Host interface {
 	SignalCancellation() error
 
 	// StartDebugging asks the host to start a debugging session with the given configuration.
-	StartDebugging(DebuggingInfo) error
+	StartDebugging(info DebuggingInfo) error
+
+	// AttachDebugger returns true if debugging is enabled.
+	AttachDebugger(spec DebugSpec) bool
 
 	// Close reclaims any resources associated with the host.
 	Close() error
@@ -100,7 +103,7 @@ type Host interface {
 
 // IsLocalPluginPath determines if a plugin source refers to a local path rather than a downloadable plugin.
 // A plugin is considered local if it doesn't match the plugin name regexp and doesn't have a download URL.
-func IsLocalPluginPath(source string) bool {
+func IsLocalPluginPath(ctx context.Context, source string) bool {
 	// If the source starts with ./ or ../ or / it's definitely a local path
 	if strings.HasPrefix(source, "./") || strings.HasPrefix(source, "..") || strings.HasPrefix(source, "/") {
 		return true
@@ -108,7 +111,7 @@ func IsLocalPluginPath(source string) bool {
 
 	// For other cases, we need to be careful about how we interpret the source, so let's parse the spec
 	// and check if it has a download URL.
-	pluginSpec, err := workspace.NewPluginSpec(source, apitype.ResourcePlugin, nil, "", nil)
+	pluginSpec, err := workspace.NewPluginSpec(ctx, source, apitype.ResourcePlugin, nil, "", nil)
 	var pluginErr workspace.PluginVersionNotFoundError
 	if err != nil && !errors.As(err, &pluginErr) {
 		// If we can't parse it as a plugin spec, assume it's a local path
@@ -127,7 +130,7 @@ func IsLocalPluginPath(source string) bool {
 // NewDefaultHost implements the standard plugin logic, using the standard installation root to find them.
 func NewDefaultHost(ctx *Context, runtimeOptions map[string]interface{},
 	disableProviderPreview bool, plugins *workspace.Plugins, packages map[string]workspace.PackageSpec,
-	config map[config.Key]string, debugging DebugEventEmitter, projectName tokens.PackageName,
+	config map[config.Key]string, debugging DebugContext, projectName tokens.PackageName,
 ) (Host, error) {
 	// Create plugin info from providers
 	projectPlugins := make([]workspace.ProjectPlugin, 0)
@@ -157,7 +160,7 @@ func NewDefaultHost(ctx *Context, runtimeOptions map[string]interface{},
 
 	for name, pkg := range packages {
 		// Skip downloadable plugins, so that only local folder paths remain.
-		if !IsLocalPluginPath(pkg.Source) {
+		if !IsLocalPluginPath(ctx.baseContext, pkg.Source) {
 			continue
 		}
 
@@ -188,7 +191,7 @@ func NewDefaultHost(ctx *Context, runtimeOptions map[string]interface{},
 		config:                  config,
 		closer:                  new(sync.Once),
 		projectPlugins:          projectPlugins,
-		debugging:               debugging,
+		debugContext:            debugging,
 		projectName:             projectName,
 	}
 
@@ -275,11 +278,12 @@ func parsePluginOpts(
 
 // PolicyAnalyzerOptions includes a bag of options to pass along to a policy analyzer.
 type PolicyAnalyzerOptions struct {
-	Organization string
-	Project      string
-	Stack        string
-	Config       property.Map
-	DryRun       bool
+	Organization     string
+	Project          string
+	Stack            string
+	Config           map[config.Key]string
+	ConfigSecretKeys []config.Key
+	DryRun           bool
 }
 
 type pluginLoadRequest struct {
@@ -302,7 +306,7 @@ type defaultHost struct {
 	disableProviderPreview  bool                             // true if provider plugins should disable provider preview
 	config                  map[config.Key]string            // the configuration map for the stack, if any.
 	projectName             tokens.PackageName               // name of the project
-	debugging               DebugEventEmitter
+	debugContext            DebugContext
 
 	// Used to synchronize shutdown with in-progress plugin loads.
 	pluginLock sync.RWMutex
@@ -341,8 +345,14 @@ func (host *defaultHost) LogStatus(sev diag.Severity, urn resource.URN, msg stri
 }
 
 func (host *defaultHost) StartDebugging(info DebuggingInfo) error {
-	contract.Assertf(host.debugging != nil, "expected host.debugging to be non-nil")
-	return host.debugging.StartDebugging(info)
+	if host.debugContext == nil {
+		return errors.New("debugging is not enabled")
+	}
+	return host.debugContext.StartDebugging(info)
+}
+
+func (host *defaultHost) AttachDebugger(spec DebugSpec) bool {
+	return host.debugContext != nil && host.debugContext.AttachDebugger(spec)
 }
 
 // loadPlugin sends an appropriate load request to the plugin loader and returns the loaded plugin (if any) and error.
@@ -407,7 +417,7 @@ func (host *defaultHost) PolicyAnalyzer(name tokens.QName, path string, opts *Po
 		}
 
 		// If not, try to load and bind to a plugin.
-		plug, err := NewPolicyAnalyzer(host, host.ctx, name, path, opts)
+		plug, err := NewPolicyAnalyzer(host, host.ctx, name, path, opts, nil)
 		if err == nil && plug != nil {
 			info, infoerr := plug.GetPluginInfo()
 			if infoerr != nil {
@@ -581,7 +591,7 @@ func (host *defaultHost) EnsurePlugins(plugins []workspace.PluginSpec, kinds Fla
 }
 
 func (host *defaultHost) ResolvePlugin(spec workspace.PluginSpec) (*workspace.PluginInfo, error) {
-	return workspace.GetPluginInfo(host.ctx.Diag, spec, host.GetProjectPlugins())
+	return workspace.GetPluginInfo(host.ctx.baseContext, host.ctx.Diag, spec, host.GetProjectPlugins())
 }
 
 func (host *defaultHost) GetProjectPlugins() []workspace.ProjectPlugin {

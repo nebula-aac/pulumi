@@ -36,6 +36,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/resource/stack"
 	pkgWorkspace "github.com/pulumi/pulumi/pkg/v3/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/diag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/diag/colors"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/slice"
@@ -46,41 +47,25 @@ import (
 
 // runStateEdit runs the given state edit function on a resource with the given URN in a given stack.
 func runStateEdit(
-	ctx context.Context, ws pkgWorkspace.Context, lm cmdBackend.LoginManager, stackName string, showPrompt bool,
-	urn resource.URN, operation edit.OperationFunc,
+	ctx context.Context, sink diag.Sink, ws pkgWorkspace.Context, lm cmdBackend.LoginManager, stackName string,
+	showPrompt bool, urn resource.URN, operation edit.OperationFunc,
 ) error {
-	return runTotalStateEdit(ctx, ws, lm, stackName, showPrompt, func(opts display.Options, snap *deploy.Snapshot) error {
-		res, err := locateStackResource(opts, snap, urn)
-		if err != nil {
-			return err
-		}
-
-		return operation(snap, res)
-	})
-}
-
-// runStateEditWithPrompt is the same as runStateEdit, but allows the caller to override the
-// prompt message.
-func runStateEditWithPrompt(
-	ctx context.Context, ws pkgWorkspace.Context, lm cmdBackend.LoginManager, stackName string, showPrompt bool,
-	urn resource.URN, operation edit.OperationFunc, overridePromptMessage string,
-) error {
-	return runTotalStateEditWithPrompt(
-		ctx, ws, lm, stackName, showPrompt, func(opts display.Options, snap *deploy.Snapshot) error {
+	return runTotalStateEdit(ctx, sink, ws, lm, stackName, showPrompt,
+		func(opts display.Options, snap *deploy.Snapshot) error {
 			res, err := locateStackResource(opts, snap, urn)
 			if err != nil {
 				return err
 			}
 
 			return operation(snap, res)
-		},
-		overridePromptMessage)
+		})
 }
 
 // runTotalStateEdit runs a snapshot-mutating function on the entirety of the given stack's snapshot.
 // Before mutating, the user may be prompted to for confirmation if the current session is interactive.
 func runTotalStateEdit(
 	ctx context.Context,
+	sink diag.Sink,
 	ws pkgWorkspace.Context,
 	lm cmdBackend.LoginManager,
 	stackName string,
@@ -92,6 +77,7 @@ func runTotalStateEdit(
 	}
 	s, err := cmdStack.RequireStack(
 		ctx,
+		sink,
 		ws,
 		lm,
 		stackName,
@@ -108,6 +94,7 @@ func runTotalStateEdit(
 // override the prompt message.
 func runTotalStateEditWithPrompt(
 	ctx context.Context,
+	sink diag.Sink,
 	ws pkgWorkspace.Context,
 	lm cmdBackend.LoginManager,
 	stackName string,
@@ -120,6 +107,7 @@ func runTotalStateEditWithPrompt(
 	}
 	s, err := cmdStack.RequireStack(
 		ctx,
+		sink,
 		ws,
 		lm,
 		stackName,
@@ -258,7 +246,7 @@ func locateStackResource(opts display.Options, snap *deploy.Snapshot, urn resour
 //
 // Prompt is displayed to the user when selecting the URN.
 func getURNFromState(
-	ctx context.Context, ws pkgWorkspace.Context, lm cmdBackend.LoginManager,
+	ctx context.Context, sink diag.Sink, ws pkgWorkspace.Context, lm cmdBackend.LoginManager,
 	stackName string, snap **deploy.Snapshot, prompt string,
 ) (resource.URN, error) {
 	if snap == nil {
@@ -272,6 +260,7 @@ func getURNFromState(
 
 		s, err := cmdStack.RequireStack(
 			ctx,
+			sink,
 			ws,
 			lm,
 			stackName,

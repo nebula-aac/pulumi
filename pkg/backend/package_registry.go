@@ -15,12 +15,14 @@
 package backend
 
 import (
-	ctx "context"
+	"context"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/registry"
 )
 
 type PackageRegistry interface {
+	registry.Registry
 	// Publish publishes a package to the package registry.
-	Publish(ctx ctx.Context, op apitype.PackagePublishOp) error
+	Publish(ctx context.Context, op apitype.PackagePublishOp) error
 }

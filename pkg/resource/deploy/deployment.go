@@ -33,6 +33,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/slice"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
@@ -40,8 +41,14 @@ import (
 
 // BackendClient is used to retrieve information about stacks from a backend.
 type BackendClient interface {
-	// GetStackOutputs returns the outputs (if any) for the named stack or an error if the stack cannot be found.
-	GetStackOutputs(ctx context.Context, name string) (resource.PropertyMap, error)
+	// GetStackOutputs returns the outputs (if any) for the named stack, returning an error if the stack cannot be found
+	// or loaded. If the stack contains secrets that cannot be decrypted, the onDecryptError callback will be called
+	// with the error. The callback should return a new error to be returned to the caller, or nil to ignore the error.
+	GetStackOutputs(
+		ctx context.Context,
+		name string,
+		onDecryptError func(error) error,
+	) (resource.PropertyMap, error)
 
 	// GetStackResourceOutputs returns the resource outputs for a stack, or an error if the stack
 	// cannot be found. Resources are retrieved from the latest stack snapshot, which may include
@@ -290,6 +297,8 @@ type Deployment struct {
 	prev *Snapshot
 	// a map of all old resources.
 	olds map[resource.URN]*resource.State
+	// a map of all old resource views, keyed by the owning resource's URN.
+	oldViews map[resource.URN][]*resource.State
 	// a map of all planned resource changes, if any.
 	plan *Plan
 	// resources to import, if this is an import deployment.
@@ -314,6 +323,8 @@ type Deployment struct {
 	newPlans *resourcePlans
 	// the set of resources read as part of the deployment
 	reads *gsync.Map[resource.URN, *resource.State]
+	// the resource status server.
+	resourceStatus *resourceStatusServer
 }
 
 // addDefaultProviders adds any necessary default provider definitions and references to the given snapshot. Version
@@ -425,10 +436,19 @@ func migrateProviders(target *Target, prev *Snapshot, source Source) error {
 	return nil
 }
 
-func buildResourceMap(prev *Snapshot, preview bool) ([]*resource.State, map[resource.URN]*resource.State, error) {
+// buildResourceMaps produces maps of old resources and views from the previous snapshot for fast access.
+// It returns the old resources, a map of old resources keyed by URN, and a map of old resource views keyed by URN
+// of the resource they are a view of. It returns an error if there are duplicate resources in the previous snapshot.
+func buildResourceMaps(prev *Snapshot) (
+	[]*resource.State,
+	map[resource.URN]*resource.State,
+	map[resource.URN][]*resource.State,
+	error,
+) {
 	olds := make(map[resource.URN]*resource.State)
+	oldViews := make(map[resource.URN][]*resource.State)
 	if prev == nil {
-		return nil, olds, nil
+		return nil, olds, oldViews, nil
 	}
 
 	for _, oldres := range prev.Resources {
@@ -439,12 +459,17 @@ func buildResourceMap(prev *Snapshot, preview bool) ([]*resource.State, map[reso
 
 		urn := oldres.URN
 		if olds[urn] != nil {
-			return nil, nil, fmt.Errorf("unexpected duplicate resource '%s'", urn)
+			return nil, nil, nil, fmt.Errorf("unexpected duplicate resource '%s'", urn)
 		}
 		olds[urn] = oldres
+
+		// If this resource is a view of another resource, add it to the list of views for that resource.
+		if oldres.ViewOf != "" {
+			oldViews[oldres.ViewOf] = append(oldViews[oldres.ViewOf], oldres)
+		}
 	}
 
-	return prev.Resources, olds, nil
+	return prev.Resources, olds, oldViews, nil
 }
 
 // NewDeployment creates a new deployment from a resource snapshot plus a package to evaluate.
@@ -479,7 +504,7 @@ func NewDeployment(
 	//
 	// NOTE: we can and do mutate prev.Resources, olds, and depGraph during execution after performing a refresh. See
 	// deploymentExecutor.refresh for details.
-	oldResources, olds, err := buildResourceMap(prev, opts.DryRun)
+	oldResources, olds, oldViews, err := buildResourceMaps(prev)
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +528,7 @@ func NewDeployment(
 	// so we just pass all of the old resources.
 	reg := providers.NewRegistry(ctx.Host, opts.DryRun, builtins)
 
-	return &Deployment{
+	deployment := &Deployment{
 		ctx:                  ctx,
 		opts:                 opts,
 		events:               events,
@@ -511,6 +536,7 @@ func NewDeployment(
 		prev:                 prev,
 		plan:                 plan,
 		olds:                 olds,
+		oldViews:             oldViews,
 		source:               source,
 		localPolicyPackPaths: localPolicyPackPaths,
 		depGraph:             depGraph,
@@ -519,7 +545,15 @@ func NewDeployment(
 		news:                 newResources,
 		newPlans:             newResourcePlan(target.Config),
 		reads:                reads,
-	}, nil
+	}
+
+	// Create a new resource status server for this deployment.
+	deployment.resourceStatus, err = newResourceStatusServer(deployment)
+	if err != nil {
+		return nil, err
+	}
+
+	return deployment, nil
 }
 
 func (d *Deployment) Ctx() *plugin.Context                   { return d.ctx }
@@ -577,6 +611,23 @@ func (d *Deployment) GetProvider(ref providers.Reference) (plugin.Provider, bool
 	return d.providers.GetProvider(ref)
 }
 
+// GetOldViews returns the old views for the given URN.
+func (d *Deployment) GetOldViews(urn resource.URN) []plugin.View {
+	return slice.Map(d.oldViews[urn], func(res *resource.State) plugin.View {
+		view := plugin.View{
+			Type:    res.URN.Type(),
+			Name:    res.URN.Name(),
+			Inputs:  res.Inputs,
+			Outputs: res.Outputs,
+		}
+		if res.Parent != "" && res.Parent != res.ViewOf {
+			view.ParentType = res.Parent.Type()
+			view.ParentName = res.Parent.Name()
+		}
+		return view
+	})
+}
+
 // generateURN generates a resource's URN from its parent, type, and name under the scope of the deployment's stack and
 // project.
 func (d *Deployment) generateURN(parent resource.URN, ty tokens.Type, name string) resource.URN {
@@ -616,4 +667,16 @@ func (d *Deployment) generateEventURN(event SourceEvent) resource.URN {
 func (d *Deployment) Execute(ctx context.Context) (*Plan, error) {
 	deploymentExec := &deploymentExecutor{deployment: d}
 	return deploymentExec.Execute(ctx)
+}
+
+// Close cleans up any resources associated with the deployment, such as the resource status server.
+func (d *Deployment) Close() error {
+	if d.resourceStatus != nil {
+		if err := d.resourceStatus.Close(); err != nil {
+			return err
+		}
+		d.resourceStatus = nil
+	}
+
+	return nil
 }

@@ -31,10 +31,23 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
+type StackConfigLocation struct {
+	// IsRemote indicates if the stack's configuration is stored remotely instead of in a local file.
+	IsRemote bool
+	// EscEnv is the optional name of an ESC Environment being used to store the stack's configuration.
+	EscEnv *string
+}
+
 // Stack is used to manage stacks of resources against a pluggable backend.
 type Stack interface {
 	// Ref returns this stack's identity.
 	Ref() StackReference
+	// ConfigLocation indicates if the backend has configuration stored independent of the local file stack config.
+	ConfigLocation() StackConfigLocation
+	// LoadRemoteConfig the stack's configuration remotely from the backend.
+	LoadRemoteConfig(ctx context.Context, project *workspace.Project) (*workspace.ProjectStack, error)
+	// SaveRemoteConfig the stack's configuration remotely to the backend.
+	SaveRemoteConfig(ctx context.Context, projectStack *workspace.ProjectStack) error
 	// Snapshot returns the latest deployment snapshot.
 	Snapshot(ctx context.Context, secretsProvider secrets.Provider) (*deploy.Snapshot, error)
 	// Backend returns the backend this stack belongs to.
@@ -46,7 +59,7 @@ type Stack interface {
 		ctx context.Context, op UpdateOperation, events chan<- engine.Event,
 	) (*deploy.Plan, display.ResourceChanges, error)
 	// Update this stack.
-	Update(ctx context.Context, op UpdateOperation) (display.ResourceChanges, error)
+	Update(ctx context.Context, op UpdateOperation, events chan<- engine.Event) (display.ResourceChanges, error)
 	// Import resources into this stack.
 	Import(ctx context.Context, op UpdateOperation, imports []deploy.Import) (display.ResourceChanges, error)
 	// Refresh this stack's state from the cloud provider.
@@ -93,8 +106,13 @@ func PreviewStack(
 }
 
 // UpdateStack updates the target stack with the current workspace's contents (config and code).
-func UpdateStack(ctx context.Context, s Stack, op UpdateOperation) (display.ResourceChanges, error) {
-	return s.Backend().Update(ctx, s, op)
+func UpdateStack(
+	ctx context.Context,
+	s Stack,
+	op UpdateOperation,
+	events chan<- engine.Event,
+) (display.ResourceChanges, error) {
+	return s.Backend().Update(ctx, s, op, events)
 }
 
 // ImportStack updates the target stack with the current workspace's contents (config and code).

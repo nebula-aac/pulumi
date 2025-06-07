@@ -103,6 +103,7 @@ func TestChangeSecretsProvider_NoSecrets(t *testing.T) {
 				NameV:   tokens.MustParseStackName("testStack"),
 			}
 		},
+		ConfigLocationF: func() backend.StackConfigLocation { return backend.StackConfigLocation{} },
 		SnapshotF: func(_ context.Context, _ secrets.Provider) (*deploy.Snapshot, error) {
 			return snapshot, nil
 		},
@@ -157,7 +158,7 @@ runtime: mock
 	// Check the config has been updated with the salt
 	project, err := workspace.LoadProject("Pulumi.yaml")
 	require.NoError(t, err)
-	projectStack, err := workspace.LoadProjectStack(project, "Pulumi.testStack.yaml")
+	projectStack, err := workspace.LoadProjectStack(nil /*sink*/, project, "Pulumi.testStack.yaml")
 	require.NoError(t, err)
 	assert.NotEmpty(t, projectStack.EncryptionSalt)
 }
@@ -204,6 +205,7 @@ func TestChangeSecretsProvider_WithSecrets(t *testing.T) {
 				NameV:   tokens.MustParseStackName("testStack"),
 			}
 		},
+		ConfigLocationF: func() backend.StackConfigLocation { return backend.StackConfigLocation{} },
 		SnapshotF: func(_ context.Context, _ secrets.Provider) (*deploy.Snapshot, error) {
 			return snapshot, nil
 		},
@@ -279,7 +281,7 @@ runtime: mock
 	// Check the config has been updated to the new secret
 	project, err := workspace.LoadProject("Pulumi.yaml")
 	require.NoError(t, err)
-	projectStack, err := workspace.LoadProjectStack(project, "Pulumi.testStack.yaml")
+	projectStack, err := workspace.LoadProjectStack(nil /*sink*/, project, "Pulumi.testStack.yaml")
 	require.NoError(t, err)
 	cfgValue, ok := projectStack.Config[cfgKey]
 	require.True(t, ok)

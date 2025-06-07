@@ -43,6 +43,8 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/backend"
 	"github.com/pulumi/pulumi/pkg/v3/backend/backenderr"
 	"github.com/pulumi/pulumi/pkg/v3/backend/display"
+	_ "github.com/pulumi/pulumi/pkg/v3/backend/diy/postgres" // driver for postgres://
+	"github.com/pulumi/pulumi/pkg/v3/backend/diy/unauthenticatedregistry"
 	sdkDisplay "github.com/pulumi/pulumi/pkg/v3/display"
 	"github.com/pulumi/pulumi/pkg/v3/engine"
 	"github.com/pulumi/pulumi/pkg/v3/operations"
@@ -57,6 +59,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/diag/colors"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/encoding"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/env"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/registry"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/slice"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
@@ -1014,7 +1017,7 @@ func (b *diyBackend) Preview(ctx context.Context, stack backend.Stack,
 }
 
 func (b *diyBackend) Update(ctx context.Context, stack backend.Stack,
-	op backend.UpdateOperation,
+	op backend.UpdateOperation, events chan<- engine.Event,
 ) (sdkDisplay.ResourceChanges, error) {
 	err := b.Lock(ctx, stack.Ref())
 	if err != nil {
@@ -1022,7 +1025,7 @@ func (b *diyBackend) Update(ctx context.Context, stack backend.Stack,
 	}
 	defer b.Unlock(ctx, stack.Ref())
 
-	return backend.PreviewThenPromptThenExecute(ctx, apitype.UpdateUpdate, stack, op, b.apply, nil)
+	return backend.PreviewThenPromptThenExecute(ctx, apitype.UpdateUpdate, stack, op, b.apply, nil, events)
 }
 
 func (b *diyBackend) Import(ctx context.Context, stack backend.Stack,
@@ -1049,7 +1052,7 @@ func (b *diyBackend) Import(ctx context.Context, stack backend.Stack,
 		return changes, err
 	}
 
-	return backend.PreviewThenPromptThenExecute(ctx, apitype.ResourceImportUpdate, stack, op, b.apply, nil)
+	return backend.PreviewThenPromptThenExecute(ctx, apitype.ResourceImportUpdate, stack, op, b.apply, nil, nil)
 }
 
 func (b *diyBackend) Refresh(ctx context.Context, stack backend.Stack,
@@ -1074,7 +1077,7 @@ func (b *diyBackend) Refresh(ctx context.Context, stack backend.Stack,
 		return changes, err
 	}
 
-	return backend.PreviewThenPromptThenExecute(ctx, apitype.RefreshUpdate, stack, op, b.apply, nil)
+	return backend.PreviewThenPromptThenExecute(ctx, apitype.RefreshUpdate, stack, op, b.apply, nil, nil)
 }
 
 func (b *diyBackend) Destroy(ctx context.Context, stack backend.Stack,
@@ -1099,7 +1102,7 @@ func (b *diyBackend) Destroy(ctx context.Context, stack backend.Stack,
 		return changes, err
 	}
 
-	return backend.PreviewThenPromptThenExecute(ctx, apitype.DestroyUpdate, stack, op, b.apply, nil)
+	return backend.PreviewThenPromptThenExecute(ctx, apitype.DestroyUpdate, stack, op, b.apply, nil, nil)
 }
 
 func (b *diyBackend) Watch(ctx context.Context, stk backend.Stack,
@@ -1523,4 +1526,8 @@ func (b *diyBackend) getParallel() int {
 
 func (b *diyBackend) GetPackageRegistry() (backend.PackageRegistry, error) {
 	return nil, errors.New("package registry is not supported by diy backends")
+}
+
+func (b *diyBackend) GetReadOnlyPackageRegistry() registry.Registry {
+	return unauthenticatedregistry.New(b.d, b.Env)
 }

@@ -19,8 +19,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pulumi/pulumi/sdk/v3/go/common/registry"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/env"
 )
+
+var ErrNotFound = NotFoundError{}
 
 // ErrNoPreviousDeployment is returned when there isn't a previous deployment.
 var ErrNoPreviousDeployment = errors.New("no previous deployment")
@@ -68,4 +71,33 @@ type MissingEnvVarForNonInteractiveError struct {
 
 func (err MissingEnvVarForNonInteractiveError) Error() string {
 	return err.Var.Name() + " must be set for login during non-interactive CLI sessions"
+}
+
+// NotFoundError wraps another error, indicating that the underlying problem was that a
+// resource was not found.
+type NotFoundError struct {
+	Err error
+}
+
+func (err NotFoundError) Error() string {
+	if err.Err == nil {
+		return "not found"
+	}
+	return err.Err.Error()
+}
+
+func (err NotFoundError) Unwrap() error { return err.Err }
+
+func (err NotFoundError) Is(other error) bool {
+	switch other.(type) {
+	case NotFoundError, *NotFoundError,
+		// By returning true for `registry.NotFoundError`, we can return true for
+		// calling code that checks:
+		//
+		//	errors.Is(err, registry.NotFoundError)
+		registry.NotFoundError, *registry.NotFoundError:
+		return true
+	default:
+		return false
+	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2016-2021, Pulumi Corporation.
+// Copyright 2016-2025, Pulumi Corporation.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,6 +55,13 @@ type ProviderHandshakeRequest struct {
 
 	// If true the engine will send URN, Name, Type and ID to the provider as part of the configuration.
 	ConfigureWithUrn bool
+
+	// If true the engine supports views and can send an address of the resource status service that
+	// can be used to create or update view resources.
+	SupportsViews bool
+
+	// If true the engine supports letting the provider mark resource states as requiring refresh before update.
+	SupportsRefreshBeforeUpdate bool
 }
 
 // The type of responses sent as part of a Handshake call.
@@ -237,12 +244,18 @@ type CreateRequest struct {
 	Properties resource.PropertyMap
 	Timeout    float64
 	Preview    bool
+	// The gRPC address of the ResourceStatus service which can be used to create view resources.
+	ResourceStatusAddress string
+	// The ResourceStatus service token to pass when calling methods on the service.
+	ResourceStatusToken string
 }
 
 type CreateResponse struct {
 	ID         resource.ID
 	Properties resource.PropertyMap
 	Status     resource.Status
+	// Indicates that this resource should always be refreshed prior to updates.
+	RefreshBeforeUpdate bool
 }
 
 type ReadRequest struct {
@@ -251,6 +264,13 @@ type ReadRequest struct {
 	Type          tokens.Type
 	ID            resource.ID
 	Inputs, State resource.PropertyMap
+	// The gRPC address of the ResourceStatus service which can be used to read view resources.
+	ResourceStatusAddress string
+	// The ResourceStatus service token to pass when calling methods on the service.
+	ResourceStatusToken string
+	// The old views for the resource being read. These will only be populated when the Read call is being made as part
+	// of a refresh operation.
+	OldViews []View
 }
 
 type ReadResponse struct {
@@ -267,11 +287,19 @@ type UpdateRequest struct {
 	Timeout                          float64
 	IgnoreChanges                    []string
 	Preview                          bool
+	// The gRPC address of the ResourceStatus service which can be used to update view resources.
+	ResourceStatusAddress string
+	// The ResourceStatus service token to pass when calling methods on the service.
+	ResourceStatusToken string
+	// The old views for the resource being updated.
+	OldViews []View
 }
 
 type UpdateResponse struct {
 	Properties resource.PropertyMap
 	Status     resource.Status
+	// Indicates that this resource should always be refreshed prior to updates.
+	RefreshBeforeUpdate bool
 }
 
 type DeleteRequest struct {
@@ -281,6 +309,12 @@ type DeleteRequest struct {
 	ID              resource.ID
 	Inputs, Outputs resource.PropertyMap
 	Timeout         float64
+	// The gRPC address of the ResourceStatus service which can be used to delete view resources.
+	ResourceStatusAddress string
+	// The ResourceStatus service token to pass when calling methods on the service.
+	ResourceStatusToken string
+	// The old views of the resource being deleted.
+	OldViews []View
 }
 
 type DeleteResponse struct {
@@ -711,6 +745,8 @@ type ReadResult struct {
 	// Outputs contains the new outputs/state for the resource, if any. If this field is nil, the resource does not
 	// exist.
 	Outputs resource.PropertyMap
+	// Indicates that this resource should always be refreshed prior to updates.
+	RefreshBeforeUpdate bool
 }
 
 // ConstructInfo contains all of the information required to register resources as part of a call to Construct.
@@ -806,9 +842,32 @@ type CallOptions struct {
 // CallResult is the result of a call to Call.
 type CallResult struct {
 	// The returned values, if the call was successful.
+	// In the case of a scalar/non-map result, a single key with any name can be used to return the
+	// value.
 	Return resource.PropertyMap
 	// A map from return value keys to the dependencies of the return value.
 	ReturnDependencies map[resource.PropertyKey][]resource.URN
 	// The failures if any arguments didn't pass verification.
 	Failures []CheckFailure
+}
+
+// View represents the state of a view resource.
+type View struct {
+	// The type of the view resource.
+	Type tokens.Type
+
+	// The name of the view resource.
+	Name string
+
+	// An optional type of the parent view resource.
+	ParentType tokens.Type
+
+	// An optional name of the parent view resource.
+	ParentName string
+
+	// The view resource's inputs.
+	Inputs resource.PropertyMap
+
+	// The view resource's outputs.
+	Outputs resource.PropertyMap
 }

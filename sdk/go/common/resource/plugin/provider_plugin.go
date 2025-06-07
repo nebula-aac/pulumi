@@ -52,6 +52,14 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 )
 
+// Temporary feature flag to enable support for view resources.
+var supportsViews bool = cmdutil.IsTruthy(os.Getenv("PULUMI_ENABLE_VIEWS_PREVIEW"))
+
+// TODO[pulumi/pulumi#19620]: Remove this temporary envvar when we no longer want to provide a way to disable it.
+// Temporary feature flag to disable support for refresh before update.
+var supportsRefreshBeforeUpdate bool = !cmdutil.IsTruthy(
+	os.Getenv("PULUMI_DISABLE_REFRESH_BEFORE_UPDATE"))
+
 // The package name for the NodeJS dynamic provider.
 const nodejsDynamicProviderPackage = "pulumi-nodejs"
 
@@ -75,7 +83,7 @@ type provider struct {
 
 	ctx                    *Context                         // a plugin context for caching, etc.
 	pkg                    tokens.Package                   // the Pulumi package containing this provider's resources.
-	plug                   *plugin                          // the actual plugin process wrapper.
+	plug                   *Plugin                          // the actual plugin process wrapper.
 	clientRaw              pulumirpc.ResourceProviderClient // the raw provider client; usually unsafe to use directly.
 	disableProviderPreview bool                             // true if previews for Create and Update are disabled.
 	legacyPreview          bool                             // enables legacy behavior for unconfigured provider previews.
@@ -166,7 +174,7 @@ func NewProvider(host Host, ctx *Context, spec workspace.PluginSpec,
 	projectName tokens.PackageName,
 ) (Provider, error) {
 	// See if this is a provider we just want to attach to
-	var plug *plugin
+	var plug *Plugin
 	var handshakeRes *ProviderHandshakeResponse
 
 	pkg := tokens.Package(spec.Name)
@@ -187,9 +195,11 @@ func NewProvider(host Host, ctx *Context, spec workspace.PluginSpec,
 			req := &ProviderHandshakeRequest{
 				EngineAddress: host.ServerAddr(),
 				// If we're attaching then we don't know the root or program directory.
-				RootDirectory:    nil,
-				ProgramDirectory: nil,
-				ConfigureWithUrn: true,
+				RootDirectory:               nil,
+				ProgramDirectory:            nil,
+				ConfigureWithUrn:            true,
+				SupportsViews:               supportsViews,
+				SupportsRefreshBeforeUpdate: supportsRefreshBeforeUpdate,
 			}
 			return handshake(ctx, bin, prefix, conn, req)
 		}
@@ -202,14 +212,14 @@ func NewProvider(host Host, ctx *Context, spec workspace.PluginSpec,
 		}
 
 		// Done; store the connection and return the plugin info.
-		plug = &plugin{
+		plug = &Plugin{
 			Conn: conn,
 			// Nothing to kill
 			Kill: func() error { return nil },
 		}
 	} else {
 		// Load the plugin's path by using the standard workspace logic.
-		path, err := workspace.GetPluginPath(ctx.Diag, spec, host.GetProjectPlugins())
+		path, err := workspace.GetPluginPath(ctx.baseContext, ctx.Diag, spec, host.GetProjectPlugins())
 		if err != nil {
 			return nil, err
 		}
@@ -240,17 +250,20 @@ func NewProvider(host Host, ctx *Context, spec workspace.PluginSpec,
 		) (*ProviderHandshakeResponse, error) {
 			dir := filepath.Dir(bin)
 			req := &ProviderHandshakeRequest{
-				EngineAddress:    host.ServerAddr(),
-				RootDirectory:    &dir,
-				ProgramDirectory: &dir,
-				ConfigureWithUrn: true,
+				EngineAddress:               host.ServerAddr(),
+				RootDirectory:               &dir,
+				ProgramDirectory:            &dir,
+				ConfigureWithUrn:            true,
+				SupportsViews:               supportsViews,
+				SupportsRefreshBeforeUpdate: supportsRefreshBeforeUpdate,
 			}
 			return handshake(ctx, bin, prefix, conn, req)
 		}
 
 		plug, handshakeRes, err = newPlugin(ctx, ctx.Pwd, path, prefix,
 			apitype.ResourcePlugin, []string{host.ServerAddr()}, env,
-			handshake, providerPluginDialOptions(ctx, pkg, ""))
+			handshake, providerPluginDialOptions(ctx, pkg, ""),
+			host.AttachDebugger(DebugSpec{Type: DebugTypePlugin, Name: spec.Name}))
 		if err != nil {
 			return nil, err
 		}
@@ -306,10 +319,12 @@ func handshake(
 ) (*ProviderHandshakeResponse, error) {
 	client := pulumirpc.NewResourceProviderClient(conn)
 	res, err := client.Handshake(ctx, &pulumirpc.ProviderHandshakeRequest{
-		EngineAddress:    req.EngineAddress,
-		RootDirectory:    req.RootDirectory,
-		ProgramDirectory: req.ProgramDirectory,
-		ConfigureWithUrn: req.ConfigureWithUrn,
+		EngineAddress:               req.EngineAddress,
+		RootDirectory:               req.RootDirectory,
+		ProgramDirectory:            req.ProgramDirectory,
+		ConfigureWithUrn:            req.ConfigureWithUrn,
+		SupportsViews:               req.SupportsViews,
+		SupportsRefreshBeforeUpdate: req.SupportsRefreshBeforeUpdate,
 	})
 	if err != nil {
 		status, ok := status.FromError(err)
@@ -318,6 +333,7 @@ func handshake(
 			logging.V(7).Infof("Handshake: not supported by '%v'", bin)
 			return nil, nil
 		}
+		return nil, fmt.Errorf("failed to handshake with '%v': %w", bin, err)
 	}
 
 	logging.V(7).Infof("Handshake: success [%v]", bin)
@@ -362,17 +378,20 @@ func NewProviderFromPath(host Host, ctx *Context, path string) (Provider, error)
 	) (*ProviderHandshakeResponse, error) {
 		dir := filepath.Dir(bin)
 		req := &ProviderHandshakeRequest{
-			EngineAddress:    host.ServerAddr(),
-			RootDirectory:    &dir,
-			ProgramDirectory: &dir,
-			ConfigureWithUrn: true,
+			EngineAddress:               host.ServerAddr(),
+			RootDirectory:               &dir,
+			ProgramDirectory:            &dir,
+			ConfigureWithUrn:            true,
+			SupportsViews:               supportsViews,
+			SupportsRefreshBeforeUpdate: supportsRefreshBeforeUpdate,
 		}
 		return handshake(ctx, bin, prefix, conn, req)
 	}
 
 	plug, handshakeRes, err := newPlugin(ctx, ctx.Pwd, path, "",
 		apitype.ResourcePlugin, []string{host.ServerAddr()}, env,
-		handshake, providerPluginDialOptions(ctx, "", path))
+		handshake, providerPluginDialOptions(ctx, "", path),
+		host.AttachDebugger(DebugSpec{Type: DebugTypePlugin, Name: path}))
 	if err != nil {
 		return nil, err
 	}
@@ -474,10 +493,12 @@ func isDiffCheckConfigLogicallyUnimplemented(err *rpcerror.Error, providerType t
 
 func (p *provider) Handshake(ctx context.Context, req ProviderHandshakeRequest) (*ProviderHandshakeResponse, error) {
 	res, err := p.clientRaw.Handshake(ctx, &pulumirpc.ProviderHandshakeRequest{
-		EngineAddress:    req.EngineAddress,
-		RootDirectory:    req.RootDirectory,
-		ProgramDirectory: req.ProgramDirectory,
-		ConfigureWithUrn: req.ConfigureWithUrn,
+		EngineAddress:               req.EngineAddress,
+		RootDirectory:               req.RootDirectory,
+		ProgramDirectory:            req.ProgramDirectory,
+		ConfigureWithUrn:            req.ConfigureWithUrn,
+		SupportsViews:               req.SupportsViews,
+		SupportsRefreshBeforeUpdate: req.SupportsRefreshBeforeUpdate,
 	})
 	if err != nil {
 		return nil, err
@@ -1309,12 +1330,14 @@ func (p *provider) Create(ctx context.Context, req CreateRequest) (CreateRespons
 	var resourceError error
 	resourceStatus := resource.StatusOK
 	resp, err := client.Create(p.requestContext(), &pulumirpc.CreateRequest{
-		Urn:        string(req.URN),
-		Name:       req.URN.Name(),
-		Type:       req.URN.Type().String(),
-		Properties: mprops,
-		Timeout:    req.Timeout,
-		Preview:    req.Preview,
+		Urn:                   string(req.URN),
+		Name:                  req.URN.Name(),
+		Type:                  req.URN.Type().String(),
+		Properties:            mprops,
+		Timeout:               req.Timeout,
+		Preview:               req.Preview,
+		ResourceStatusAddress: req.ResourceStatusAddress,
+		ResourceStatusToken:   req.ResourceStatusToken,
 	})
 	if err != nil {
 		resourceStatus, id, liveObject, _, resourceError = parseError(err)
@@ -1353,10 +1376,17 @@ func (p *provider) Create(ctx context.Context, req CreateRequest) (CreateRespons
 	}
 
 	logging.V(7).Infof("%s success: id=%s; #outs=%d", label, id, len(outs))
+
+	var refreshBeforeUpdate bool
+	if resp != nil {
+		refreshBeforeUpdate = resp.RefreshBeforeUpdate && supportsRefreshBeforeUpdate
+	}
+
 	return CreateResponse{
-		ID:         id,
-		Properties: outs,
-		Status:     resourceStatus,
+		ID:                  id,
+		Properties:          outs,
+		Status:              resourceStatus,
+		RefreshBeforeUpdate: refreshBeforeUpdate,
 	}, resourceError
 }
 
@@ -1414,6 +1444,15 @@ func (p *provider) Read(ctx context.Context, req ReadRequest) (ReadResponse, err
 		return ReadResponse{Status: resource.StatusUnknown}, err
 	}
 
+	oldViews, err := marshalViews(req.OldViews, MarshalOptions{
+		Label:         label,
+		KeepSecrets:   protocol.acceptSecrets,
+		KeepResources: protocol.acceptResources,
+	})
+	if err != nil {
+		return ReadResponse{Status: resource.StatusUnknown}, err
+	}
+
 	// Now issue the read request over RPC, blocking until it finished.
 	var readID resource.ID
 	var liveObject *structpb.Struct
@@ -1421,12 +1460,15 @@ func (p *provider) Read(ctx context.Context, req ReadRequest) (ReadResponse, err
 	var resourceError error
 	resourceStatus := resource.StatusOK
 	resp, err := client.Read(p.requestContext(), &pulumirpc.ReadRequest{
-		Id:         string(req.ID),
-		Urn:        string(req.URN),
-		Name:       req.URN.Name(),
-		Type:       req.URN.Type().String(),
-		Properties: mstate,
-		Inputs:     minputs,
+		Id:                    string(req.ID),
+		Urn:                   string(req.URN),
+		Name:                  req.URN.Name(),
+		Type:                  req.URN.Type().String(),
+		Properties:            mstate,
+		Inputs:                minputs,
+		ResourceStatusAddress: req.ResourceStatusAddress,
+		ResourceStatusToken:   req.ResourceStatusToken,
+		OldViews:              oldViews,
 	})
 	if err != nil {
 		resourceStatus, readID, liveObject, liveInputs, resourceError = parseError(err)
@@ -1483,11 +1525,17 @@ func (p *provider) Read(ctx context.Context, req ReadRequest) (ReadResponse, err
 	restoreElidedAssetContents(req.Inputs, newInputs)
 	restoreElidedAssetContents(req.Inputs, newState)
 
+	var refreshBeforeUpdate bool
+	if resp != nil {
+		refreshBeforeUpdate = resp.RefreshBeforeUpdate && supportsRefreshBeforeUpdate
+	}
+
 	logging.V(7).Infof("%s success; #outs=%d, #inputs=%d", label, len(newState), len(newInputs))
 	return ReadResponse{ReadResult{
-		ID:      readID,
-		Outputs: newState,
-		Inputs:  newInputs,
+		ID:                  readID,
+		Outputs:             newState,
+		Inputs:              newInputs,
+		RefreshBeforeUpdate: refreshBeforeUpdate,
 	}, resourceStatus}, resourceError
 }
 
@@ -1570,20 +1618,32 @@ func (p *provider) Update(ctx context.Context, req UpdateRequest) (UpdateRespons
 		return UpdateResponse{Status: resource.StatusOK}, err
 	}
 
+	oldViews, err := marshalViews(req.OldViews, MarshalOptions{
+		Label:         label + ".oldViews",
+		KeepSecrets:   protocol.acceptSecrets,
+		KeepResources: protocol.acceptResources,
+	})
+	if err != nil {
+		return UpdateResponse{Status: resource.StatusOK}, err
+	}
+
 	var liveObject *structpb.Struct
 	var resourceError error
 	resourceStatus := resource.StatusOK
 	resp, err := client.Update(p.requestContext(), &pulumirpc.UpdateRequest{
-		Id:            string(req.ID),
-		Urn:           string(req.URN),
-		Name:          req.URN.Name(),
-		Type:          req.URN.Type().String(),
-		Olds:          mOldOutputs,
-		News:          mNewInputs,
-		Timeout:       req.Timeout,
-		IgnoreChanges: req.IgnoreChanges,
-		Preview:       req.Preview,
-		OldInputs:     mOldInputs,
+		Id:                    string(req.ID),
+		Urn:                   string(req.URN),
+		Name:                  req.URN.Name(),
+		Type:                  req.URN.Type().String(),
+		Olds:                  mOldOutputs,
+		News:                  mNewInputs,
+		Timeout:               req.Timeout,
+		IgnoreChanges:         req.IgnoreChanges,
+		Preview:               req.Preview,
+		OldInputs:             mOldInputs,
+		ResourceStatusAddress: req.ResourceStatusAddress,
+		ResourceStatusToken:   req.ResourceStatusToken,
+		OldViews:              oldViews,
 	})
 	if err != nil {
 		resourceStatus, _, liveObject, _, resourceError = parseError(err)
@@ -1616,7 +1676,16 @@ func (p *provider) Update(ctx context.Context, req UpdateRequest) (UpdateRespons
 	}
 	logging.V(7).Infof("%s success; #outs=%d", label, len(outs))
 
-	return UpdateResponse{Properties: outs, Status: resourceStatus}, resourceError
+	var refreshBeforeUpdate bool
+	if resp != nil {
+		refreshBeforeUpdate = resp.RefreshBeforeUpdate && supportsRefreshBeforeUpdate
+	}
+
+	return UpdateResponse{
+		Properties:          outs,
+		Status:              resourceStatus,
+		RefreshBeforeUpdate: refreshBeforeUpdate,
+	}, resourceError
 }
 
 // Delete tears down an existing resource.
@@ -1663,17 +1732,29 @@ func (p *provider) Delete(ctx context.Context, req DeleteRequest) (DeleteRespons
 		return DeleteResponse{}, err
 	}
 
+	oldViews, err := marshalViews(req.OldViews, MarshalOptions{
+		Label:         label + ".oldViews",
+		KeepSecrets:   protocol.acceptSecrets,
+		KeepResources: protocol.acceptResources,
+	})
+	if err != nil {
+		return DeleteResponse{}, err
+	}
+
 	// We should only be calling {Create,Update,Delete} if the provider is fully configured.
 	contract.Assertf(pcfg.known, "Delete cannot be called if the configuration is unknown")
 
 	if _, err := client.Delete(p.requestContext(), &pulumirpc.DeleteRequest{
-		Id:         string(req.ID),
-		Urn:        string(req.URN),
-		Name:       req.URN.Name(),
-		Type:       req.URN.Type().String(),
-		Properties: moutputs,
-		Timeout:    req.Timeout,
-		OldInputs:  minputs,
+		Id:                    string(req.ID),
+		Urn:                   string(req.URN),
+		Name:                  req.URN.Name(),
+		Type:                  req.URN.Type().String(),
+		Properties:            moutputs,
+		Timeout:               req.Timeout,
+		OldInputs:             minputs,
+		ResourceStatusAddress: req.ResourceStatusAddress,
+		ResourceStatusToken:   req.ResourceStatusToken,
+		OldViews:              oldViews,
 	}); err != nil {
 		resourceStatus, rpcErr := resourceStateAndError(err)
 		logging.V(7).Infof("%s failed: %v", label, rpcErr)
@@ -2265,4 +2346,41 @@ func (p *provider) GetMappings(ctx context.Context, req GetMappingsRequest) (Get
 		resp.Providers = []string{}
 	}
 	return GetMappingsResponse{resp.Providers}, nil
+}
+
+// marshalViews is a helper that marshals a slice of views into the gRPC equivalent.
+func marshalViews(views []View, opts MarshalOptions) ([]*pulumirpc.View, error) {
+	return slice.MapError(views, func(v View) (*pulumirpc.View, error) {
+		return marshalView(v, opts)
+	})
+}
+
+// marshalView is a helper that marshals a view into the gRPC equivalent.
+func marshalView(v View, opts MarshalOptions) (*pulumirpc.View, error) {
+	var err error
+
+	var inputs *structpb.Struct
+	if v.Inputs != nil {
+		inputs, err = MarshalProperties(v.Inputs, opts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var outputs *structpb.Struct
+	if v.Outputs != nil {
+		outputs, err = MarshalProperties(v.Outputs, opts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &pulumirpc.View{
+		Type:       string(v.Type),
+		Name:       v.Name,
+		ParentType: string(v.ParentType),
+		ParentName: v.ParentName,
+		Inputs:     inputs,
+		Outputs:    outputs,
+	}, nil
 }
