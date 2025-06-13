@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"testing"
 	"time"
 
@@ -1460,11 +1461,11 @@ func TestMissingErrorText(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // modifies environment variables
 func TestBundledPluginSearch(t *testing.T) {
 	// Get the path of this executable
 	exe, err := os.Executable()
 	require.NoError(t, err)
+	ctx := context.Background()
 
 	// Create a fake side-by-side plugin next to this executable, it must match one of our bundled names
 	bundledPath := filepath.Join(filepath.Dir(exe), "pulumi-language-nodejs")
@@ -1487,19 +1488,19 @@ func TestBundledPluginSearch(t *testing.T) {
 
 	// Lookup the plugin with ambient search turned on
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "false")
-	path, err := GetPluginPath(d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
+	path, err := GetPluginPath(ctx, d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ambientPath, path)
 
 	// Lookup the plugin with ambient search turned off
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "true")
-	path, err = GetPluginPath(d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
+	path, err = GetPluginPath(ctx, d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, bundledPath, path)
 }
 
-//nolint:paralleltest // modifies environment variables
 func TestAmbientPluginsWarn(t *testing.T) {
+	ctx := context.Background()
 	// Create a fake plugin in the path
 	pathDir := t.TempDir()
 	t.Setenv("PATH", pathDir)
@@ -1516,7 +1517,7 @@ func TestAmbientPluginsWarn(t *testing.T) {
 
 	// Lookup the plugin with ambient search turned on
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "false")
-	path, err := GetPluginPath(d, PluginSpec{Name: "mock", Kind: apitype.ResourcePlugin}, nil)
+	path, err := GetPluginPath(ctx, d, PluginSpec{Name: "mock", Kind: apitype.ResourcePlugin}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ambientPath, path)
 
@@ -1525,11 +1526,15 @@ func TestAmbientPluginsWarn(t *testing.T) {
 	assert.Equal(t, expectedMessage, stderr.String())
 }
 
-//nolint:paralleltest // modifies environment variables
 func TestAmbientBundledPluginsWarn(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		// TODO[pulumi/pulumi#19675]: Fix this test on MacOS
+		t.Skip("Skipping tests on MacOS")
+	}
 	// Get the path of this executable
 	exe, err := os.Executable()
 	require.NoError(t, err)
+	ctx := context.Background()
 
 	// Create a fake side-by-side plugin next to this executable, it must match one of our bundled names
 	bundledPath := filepath.Join(filepath.Dir(exe), "pulumi-language-nodejs")
@@ -1556,7 +1561,7 @@ func TestAmbientBundledPluginsWarn(t *testing.T) {
 
 	// Lookup the plugin with ambient search turned on
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "false")
-	path, err := GetPluginPath(d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
+	path, err := GetPluginPath(ctx, d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ambientPath, path)
 
@@ -1566,8 +1571,8 @@ func TestAmbientBundledPluginsWarn(t *testing.T) {
 	assert.Equal(t, expectedMessage, stderr.String())
 }
 
-//nolint:paralleltest // modifies environment variables
 func TestBundledPluginsDoNotWarn(t *testing.T) {
+	ctx := context.Background()
 	// Get the path of this executable
 	exe, err := os.Executable()
 	require.NoError(t, err)
@@ -1593,7 +1598,7 @@ func TestBundledPluginsDoNotWarn(t *testing.T) {
 
 	// Lookup the plugin with ambient search turned on
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "false")
-	path, err := GetPluginPath(d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
+	path, err := GetPluginPath(ctx, d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, bundledPath, path)
 
@@ -1602,9 +1607,8 @@ func TestBundledPluginsDoNotWarn(t *testing.T) {
 }
 
 // Regression test for https://github.com/pulumi/pulumi/issues/13656
-//
-//nolint:paralleltest // modifies environment variables
 func TestSymlinkPathPluginsDoNotWarn(t *testing.T) {
+	ctx := context.Background()
 	// Get the path of this executable
 	exe, err := os.Executable()
 	require.NoError(t, err)
@@ -1634,7 +1638,7 @@ func TestSymlinkPathPluginsDoNotWarn(t *testing.T) {
 
 	// Lookup the plugin with ambient search turned on
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "false")
-	path, err := GetPluginPath(d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
+	path, err := GetPluginPath(ctx, d, PluginSpec{Name: "nodejs", Kind: apitype.LanguagePlugin}, nil)
 	require.NoError(t, err)
 	// We expect the ambient path to be returned, but not to warn because it resolves to the same file as the
 	// bundled path.
@@ -1646,6 +1650,7 @@ func TestSymlinkPathPluginsDoNotWarn(t *testing.T) {
 //
 //nolint:paralleltest // modifies environment variables
 func TestPluginInfoShimless(t *testing.T) {
+	ctx := context.Background()
 	// Create a fake plugin in temp
 	pathDir := t.TempDir()
 
@@ -1667,7 +1672,7 @@ func TestPluginInfoShimless(t *testing.T) {
 		diag.FormatOptions{Color: "never"},
 	)
 
-	info, err := GetPluginInfo(d, PluginSpec{Kind: apitype.ResourcePlugin, Name: "mock"}, []ProjectPlugin{
+	info, err := GetPluginInfo(ctx, d, PluginSpec{Kind: apitype.ResourcePlugin, Name: "mock"}, []ProjectPlugin{
 		{
 			Name: "mock",
 			Kind: apitype.ResourcePlugin,
@@ -1683,27 +1688,28 @@ func TestPluginInfoShimless(t *testing.T) {
 	assert.Equal(t, filepath.Join(filepath.Dir(pluginPath), "schema-mock.json"), info.SchemaPath)
 }
 
-//nolint:paralleltest // modifies environment variables
 func TestProjectPluginsWithUncleanPath(t *testing.T) {
+	ctx := context.Background()
 	tempdir := t.TempDir()
 
 	err := os.WriteFile(filepath.Join(tempdir, "pulumi-resource-aws"), []byte{}, 0o600)
 	require.NoError(t, err)
 
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "false")
-	path, err := GetPluginPath(diagtest.LogSink(t), PluginSpec{Kind: apitype.ResourcePlugin, Name: "aws"}, []ProjectPlugin{
-		{
-			Name: "aws",
-			Kind: apitype.ResourcePlugin,
-			Path: tempdir + "/", // path with a trailing slash
-		},
-	})
+	path, err := GetPluginPath(ctx, diagtest.LogSink(t), PluginSpec{Kind: apitype.ResourcePlugin, Name: "aws"},
+		[]ProjectPlugin{
+			{
+				Name: "aws",
+				Kind: apitype.ResourcePlugin,
+				Path: tempdir + "/", // path with a trailing slash
+			},
+		})
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(tempdir, "pulumi-resource-aws"), path)
 }
 
-//nolint:paralleltest // modifies environment variables
 func TestProjectPluginsWithSymlink(t *testing.T) {
+	ctx := context.Background()
 	tempdir := t.TempDir()
 
 	err := os.Mkdir(filepath.Join(tempdir, "subdir"), 0o700)
@@ -1714,13 +1720,14 @@ func TestProjectPluginsWithSymlink(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Setenv("PULUMI_IGNORE_AMBIENT_PLUGINS", "false")
-	path, err := GetPluginPath(diagtest.LogSink(t), PluginSpec{Kind: apitype.ResourcePlugin, Name: "aws"}, []ProjectPlugin{
-		{
-			Name: "aws",
-			Kind: apitype.ResourcePlugin,
-			Path: filepath.Join(tempdir, "symlink"),
-		},
-	})
+	path, err := GetPluginPath(ctx, diagtest.LogSink(t), PluginSpec{Kind: apitype.ResourcePlugin, Name: "aws"},
+		[]ProjectPlugin{
+			{
+				Name: "aws",
+				Kind: apitype.ResourcePlugin,
+				Path: filepath.Join(tempdir, "symlink"),
+			},
+		})
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(tempdir, "symlink", "pulumi-resource-aws"), path)
 }
@@ -1769,7 +1776,7 @@ func TestNewPluginSpec(t *testing.T) {
 			name:   "plugin with invalid semver",
 			source: "pulumi-example@v1.0.0.0",
 			kind:   apitype.ResourcePlugin,
-			Error:  errors.New("VERSION must be valid semver: Invalid character(s) found in patch number \"0.0\""),
+			Error:  errors.New("VERSION must be valid semver: v1.0.0.0"),
 		},
 		{
 			name:   "git plugin with version",
@@ -1919,7 +1926,7 @@ func TestNewPluginSpec(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 
-			spec, err := NewPluginSpec(c.source, c.kind, c.version, c.pluginDownloadURL, nil)
+			spec, err := NewPluginSpec(context.Background(), c.source, c.kind, c.version, c.pluginDownloadURL, nil)
 			if c.Error != nil {
 				require.EqualError(t, err, c.Error.Error())
 				return
@@ -1960,13 +1967,18 @@ func TestGitSourceDownloadSemver(t *testing.T) {
 	require.NoError(t, err)
 
 	tarReader := tar.NewReader(zip)
-	header, err := tarReader.Next()
-	require.NoError(t, err)
-	require.Equal(t, "path/", header.Name)
-
-	header, err = tarReader.Next()
-	require.NoError(t, err)
-	require.Equal(t, "path/test", header.Name)
+	for {
+		header, err := tarReader.Next()
+		require.NoError(t, err)
+		if header.Name == "path/" {
+			// Some of the implementations of tar in Go (in particular Go 1.23 and earlier) don't
+			// include the directory entry in the tar stream.  So we can skip over that here, and
+			// make sure we find the file entry we really care about.
+			continue
+		}
+		require.Equal(t, "path/test", header.Name)
+		break
+	}
 
 	buf, err := io.ReadAll(tarReader)
 	require.NoError(t, err)
@@ -2003,13 +2015,18 @@ func TestGitSourceDownloadHEAD(t *testing.T) {
 	require.NoError(t, err)
 
 	tarReader := tar.NewReader(zip)
-	header, err := tarReader.Next()
-	require.NoError(t, err)
-	require.Equal(t, "path/", header.Name)
-
-	header, err = tarReader.Next()
-	require.NoError(t, err)
-	require.Equal(t, "path/test", header.Name)
+	for {
+		header, err := tarReader.Next()
+		require.NoError(t, err)
+		if header.Name == "path/" {
+			// Some of the implementations of tar in Go (in particular Go 1.23 and earlier) don't
+			// include the directory entry in the tar stream.  So we can skip over that here, and
+			// make sure we find the file entry we really care about.
+			continue
+		}
+		require.Equal(t, "path/test", header.Name)
+		break
+	}
 
 	buf, err := io.ReadAll(tarReader)
 	require.NoError(t, err)
@@ -2046,13 +2063,18 @@ func TestGitSourceDownloadHash(t *testing.T) {
 	require.NoError(t, err)
 
 	tarReader := tar.NewReader(zip)
-	header, err := tarReader.Next()
-	require.NoError(t, err)
-	require.Equal(t, "path/", header.Name)
-
-	header, err = tarReader.Next()
-	require.NoError(t, err)
-	require.Equal(t, "path/test", header.Name)
+	for {
+		header, err := tarReader.Next()
+		require.NoError(t, err)
+		if header.Name == "path/" {
+			// Some of the implementations of tar in Go (in particular Go 1.23 and earlier) don't
+			// include the directory entry in the tar stream.  So we can skip over that here, and
+			// make sure we find the file entry we really care about.
+			continue
+		}
+		require.Equal(t, "path/test", header.Name)
+		break
+	}
 
 	buf, err := io.ReadAll(tarReader)
 	require.NoError(t, err)

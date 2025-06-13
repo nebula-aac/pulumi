@@ -70,14 +70,12 @@ func RenderCopilotErrorSummary(summary *CopilotErrorSummaryMetadata, err error, 
 
 	summaryLines := strings.Split(summary.Summary, "\n")
 	for _, line := range summaryLines {
-		fmt.Fprintln(out, "  "+opts.Color.Colorize(colors.BrightGreen+line+colors.Reset))
+		fmt.Fprintln(out, "  "+line)
 	}
 
 	fmt.Fprintln(out)
 
-	if opts.ShowLinkToCopilot {
-		PrintCopilotLink(out, opts, permalink)
-	}
+	PrintCopilotLink(out, opts, permalink)
 }
 
 func PrintCopilotLink(out io.Writer, opts Options, permalink string) {

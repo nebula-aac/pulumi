@@ -445,7 +445,9 @@ class RunRequest(google.protobuf.message.Message):
     """The organization of the stack being deployed into."""
     @property
     def configPropertyMap(self) -> google.protobuf.struct_pb2.Struct:
-        """Configuration variables to apply before running the program."""
+        """This is deprecated, runtimes should look at the string based config as that maintains the full textual data from
+        the users config file.
+        """
     @property
     def info(self) -> global___ProgramInfo:
         """The program to use."""
@@ -515,6 +517,7 @@ class InstallDependenciesRequest(google.protobuf.message.Message):
     IS_TERMINAL_FIELD_NUMBER: builtins.int
     INFO_FIELD_NUMBER: builtins.int
     USE_LANGUAGE_VERSION_TOOLS_FIELD_NUMBER: builtins.int
+    IS_PLUGIN_FIELD_NUMBER: builtins.int
     directory: builtins.str
     """The program's working directory.
 
@@ -534,6 +537,8 @@ class InstallDependenciesRequest(google.protobuf.message.Message):
     """True if the host should use language-specific version managers, such as `pyenv` or `nvm`, to set up the version
     of the language toolchain used.
     """
+    is_plugin: builtins.bool
+    """True if this install is for a plugin, as opposed to a top level Pulumi program."""
     def __init__(
         self,
         *,
@@ -541,9 +546,10 @@ class InstallDependenciesRequest(google.protobuf.message.Message):
         is_terminal: builtins.bool = ...,
         info: global___ProgramInfo | None = ...,
         use_language_version_tools: builtins.bool = ...,
+        is_plugin: builtins.bool = ...,
     ) -> None: ...
     def HasField(self, field_name: typing_extensions.Literal["info", b"info"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["directory", b"directory", "info", b"info", "is_terminal", b"is_terminal", "use_language_version_tools", b"use_language_version_tools"]) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["directory", b"directory", "info", b"info", "is_plugin", b"is_plugin", "is_terminal", b"is_terminal", "use_language_version_tools", b"use_language_version_tools"]) -> None: ...
 
 global___InstallDependenciesRequest = InstallDependenciesRequest
 
@@ -712,6 +718,8 @@ class RunPluginRequest(google.protobuf.message.Message):
     ENV_FIELD_NUMBER: builtins.int
     INFO_FIELD_NUMBER: builtins.int
     KIND_FIELD_NUMBER: builtins.int
+    NAME_FIELD_NUMBER: builtins.int
+    ATTACH_DEBUGGER_FIELD_NUMBER: builtins.int
     pwd: builtins.str
     """The plugin program's working directory."""
     program: builtins.str
@@ -733,6 +741,10 @@ class RunPluginRequest(google.protobuf.message.Message):
         """The [plugin program](pulumirpc.ProgramInfo) to use."""
     kind: builtins.str
     """The kind of plugin to run (resource/analyzer/etc)."""
+    name: builtins.str
+    """The name of the plugin (for display purposes)"""
+    attach_debugger: builtins.bool
+    """True if a plugin should be started under a debugger."""
     def __init__(
         self,
         *,
@@ -742,9 +754,11 @@ class RunPluginRequest(google.protobuf.message.Message):
         env: collections.abc.Iterable[builtins.str] | None = ...,
         info: global___ProgramInfo | None = ...,
         kind: builtins.str = ...,
+        name: builtins.str = ...,
+        attach_debugger: builtins.bool = ...,
     ) -> None: ...
     def HasField(self, field_name: typing_extensions.Literal["info", b"info"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["args", b"args", "env", b"env", "info", b"info", "kind", b"kind", "program", b"program", "pwd", b"pwd"]) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["args", b"args", "attach_debugger", b"attach_debugger", "env", b"env", "info", b"info", "kind", b"kind", "name", b"name", "program", b"program", "pwd", b"pwd"]) -> None: ...
 
 global___RunPluginRequest = RunPluginRequest
 
@@ -1136,3 +1150,61 @@ class LanguageHandshakeResponse(google.protobuf.message.Message):
     ) -> None: ...
 
 global___LanguageHandshakeResponse = LanguageHandshakeResponse
+
+@typing_extensions.final
+class LinkRequest(google.protobuf.message.Message):
+    """`LinkRequest` is the type of requests sent as part of a [](pulumirpc.LanguageRuntime.Link) call."""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    @typing_extensions.final
+    class LocalDependenciesEntry(google.protobuf.message.Message):
+        DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+        KEY_FIELD_NUMBER: builtins.int
+        VALUE_FIELD_NUMBER: builtins.int
+        key: builtins.str
+        value: builtins.str
+        def __init__(
+            self,
+            *,
+            key: builtins.str = ...,
+            value: builtins.str = ...,
+        ) -> None: ...
+        def ClearField(self, field_name: typing_extensions.Literal["key", b"key", "value", b"value"]) -> None: ...
+
+    INFO_FIELD_NUMBER: builtins.int
+    LOCAL_DEPENDENCIES_FIELD_NUMBER: builtins.int
+    @property
+    def info(self) -> global___ProgramInfo:
+        """The program to use."""
+    @property
+    def local_dependencies(self) -> google.protobuf.internal.containers.ScalarMap[builtins.str, builtins.str]:
+        """Local dependencies that the program should reference explicitly, instead of e.g. using the language's
+        package system. This is a map of package names to local paths of language-specific artifacts that
+        should be used. For instance, in the case of a NodeJS package, this might be a map of NPM package names
+        to local paths to be used, such as `{ "@pulumi/aws": "/some/path/to/aws.tgz" }` if a local tarball is
+        to be used instead of the published `@pulumi/aws` package.
+        """
+    def __init__(
+        self,
+        *,
+        info: global___ProgramInfo | None = ...,
+        local_dependencies: collections.abc.Mapping[builtins.str, builtins.str] | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["info", b"info"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["info", b"info", "local_dependencies", b"local_dependencies"]) -> None: ...
+
+global___LinkRequest = LinkRequest
+
+@typing_extensions.final
+class LinkResponse(google.protobuf.message.Message):
+    """`LinkResponse` is the type of responses sent by a [](pulumirpc.LanguageRuntime.Link) call."""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___LinkResponse = LinkResponse

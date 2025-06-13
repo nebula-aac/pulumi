@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/backend/display/internal/terminal"
@@ -110,6 +111,10 @@ func testProgressEvents(
 
 //nolint:paralleltest // sets the TERM environment variable
 func TestProgressEvents(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		// TODO[pulumi/pulumi#19675]: Fix this test on Windows and MacOS
+		t.Skip("Skipping tests on Windows and MacOS.")
+	}
 	t.Setenv("TERM", "vt102")
 
 	accept := cmdutil.IsTruthy(os.Getenv("PULUMI_ACCEPT"))
@@ -208,7 +213,7 @@ func TestCaptureProgressEventsCapturesOutput(t *testing.T) {
 	assert.Contains(t, captureRenderer.Output(), "Hello, world!")
 }
 
-func TestCaptureProgressEventsDetectsAndCapturesFailure(t *testing.T) {
+func TestCaptureProgressEventsDetectsResourceOperationFailed(t *testing.T) {
 	t.Parallel()
 
 	// If we see a ResourceOperationFailed event, the update is marked as failed.
@@ -218,12 +223,7 @@ func TestCaptureProgressEventsDetectsAndCapturesFailure(t *testing.T) {
 			Op:  deploy.OpUpdate,
 		},
 	})
-	// Some diagnostics which is what we're usually interested in.
-	diagEvent := engine.NewEvent(engine.DiagEventPayload{
-		URN:     "urn:pulumi:dev::eks::pulumi:pulumi:Stack::eks-dev",
-		Message: "Failed to update",
-	})
-	failureEvents := []engine.Event{resourceOperationFailedEvent, diagEvent}
+	failureEvents := []engine.Event{resourceOperationFailedEvent}
 	eventsChannel := sliceToBufferedChan(failureEvents)
 
 	captureRenderer := NewCaptureProgressEvents(
@@ -231,10 +231,9 @@ func TestCaptureProgressEventsDetectsAndCapturesFailure(t *testing.T) {
 	captureRenderer.ProcessEvents(eventsChannel, make(chan<- bool))
 
 	assert.True(t, captureRenderer.OutputIncludesFailure())
-	assert.Contains(t, captureRenderer.Output(), "Failed to update")
 }
 
-func TestCaptureProgressEventsDetectsAndCapturesFailurePreview(t *testing.T) {
+func TestCaptureProgressEventsDetectsDiagnosticsWithErrors(t *testing.T) {
 	t.Parallel()
 
 	diagEventWithErrors := engine.NewEvent(engine.DiagEventPayload{

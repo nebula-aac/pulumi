@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tests
+package stack
 
 import (
 	"context"
@@ -42,7 +42,6 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-//nolint:paralleltest // mutates environment variables
 func TestStackCommands(t *testing.T) {
 	// stack init, stack ls, stack rm, stack ls
 	t.Run("SanityTest", func(t *testing.T) {
@@ -220,6 +219,7 @@ func TestStackCommands(t *testing.T) {
 		}
 
 		for _, deploymentVersion := range versions {
+			//nolint:paralleltest // mutates environment variables
 			t.Run(fmt.Sprintf("Version%d", deploymentVersion), func(t *testing.T) {
 				e := ptesting.NewEnvironment(t)
 				defer e.DeleteIfNotFailed()
@@ -327,7 +327,6 @@ func TestStackCommands(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // mutates environment variables
 func TestStackBackups(t *testing.T) {
 	t.Run("StackBackupCreatedSanityTest", func(t *testing.T) {
 		e := ptesting.NewEnvironment(t)
@@ -474,6 +473,9 @@ func TestStackRenameAfterCreate(t *testing.T) {
 // TestStackRenameServiceAfterCreateBackend tests a few edge cases about renaming
 // stacks owned by organizations in the service backend.
 func TestStackRenameAfterCreateServiceBackend(t *testing.T) {
+	if os.Getenv("PULUMI_ACCESS_TOKEN") == "" {
+		t.Skipf("Skipping: PULUMI_ACCESS_TOKEN is not set")
+	}
 	t.Parallel()
 
 	e := ptesting.NewEnvironment(t)
@@ -503,6 +505,121 @@ func TestStackRenameAfterCreateServiceBackend(t *testing.T) {
 	e.RunCommand("pulumi", "stack", "rename", orgName+"/"+stackRenameBase+"2")
 	stdoutXyz2, _ := e.RunCommand("pulumi", "config", "get", "xyz")
 	assert.Equal(t, "abc", strings.Trim(stdoutXyz2, "\r\n"))
+}
+
+func TestStackRemoteConfig(t *testing.T) {
+	t.Parallel()
+	// This test requires the service, as only the service supports orgs.
+	if os.Getenv("PULUMI_ACCESS_TOKEN") == "" {
+		t.Skipf("Skipping: PULUMI_ACCESS_TOKEN is not set")
+	}
+
+	createRemoteConfigStack := func(t *testing.T) (*ptesting.Environment, string, string, string) {
+		t.Helper()
+		e := ptesting.NewEnvironment(t)
+		e.Cleanup(func() {
+			e.DeleteIfNotFailed()
+		})
+
+		stackName, err := resource.NewUniqueHex("test-name-", 8, -1)
+		require.NoError(t, err)
+
+		integration.CreateBasicPulumiRepo(e)
+		stdOut, stdErr := e.RunCommand("pulumi", "stack", "init", stackName, "--remote-config")
+		e.Cleanup(func() {
+			e.RunCommand("pulumi", "stack", "rm", stackName, "--yes")
+			e.RunCommand("pulumi", "env", "rm", "pulumi-test/"+stackName, "--yes")
+		})
+		return e, stackName, stdOut, stdErr
+	}
+
+	t.Run("stack init creates env", func(t *testing.T) {
+		t.Parallel()
+
+		e, stackName, stdOut, _ := createRemoteConfigStack(t)
+		assert.Contains(t, stdOut, "Created environment pulumi-test/"+stackName+" for stack configuration")
+		openOut, openErr := e.RunCommand("pulumi", "env", "open", "pulumi-test/"+stackName)
+		assert.Empty(t, openErr)
+		assert.Equal(t, "{}\n", openOut, "creates empty env")
+	})
+
+	t.Run("set config warning", func(t *testing.T) {
+		t.Parallel()
+
+		e, stackName, _, _ := createRemoteConfigStack(t)
+		configSetOut, configSetErr := e.RunCommandExpectError(
+			"pulumi", "config", "set", "provider-name:key.subkey", "value")
+		assert.Empty(t, configSetOut)
+		expectedConfigSetErr := fmt.Sprintf(
+			"config set not supported for remote stack config: "+
+				"use `pulumi env set pulumi-test/%s pulumiConfig.provider-name:key.subkey value",
+			stackName)
+		assert.Contains(t, configSetErr, expectedConfigSetErr, "directs user to use 'env set'")
+	})
+
+	t.Run("set secret warning", func(t *testing.T) {
+		t.Parallel()
+
+		e, stackName, _, _ := createRemoteConfigStack(t)
+		configSetOut, configSetErr := e.RunCommandExpectError(
+			"pulumi", "config", "set", "--secret", "secretKey", "password")
+		assert.Empty(t, configSetOut)
+		newVar := fmt.Sprintf(
+			"config set not supported for remote stack config: "+
+				"use `pulumi env set pulumi-test/%s pulumiConfig.pulumi-test:secretKey --secret <value>",
+			stackName)
+		assert.Contains(t, configSetErr, newVar, "should hide secret values")
+	})
+
+	t.Run("get", func(t *testing.T) {
+		t.Parallel()
+
+		e, stackName, _, _ := createRemoteConfigStack(t)
+		envSetOut, envSetErr := e.RunCommand(
+			"pulumi", "env", "set", "pulumi-test/"+stackName, "pulumiConfig.pulumi-test:key", "value")
+		assert.Empty(t, envSetOut)
+		assert.Empty(t, envSetErr)
+
+		getOut, getErr := e.RunCommand("pulumi", "config", "get", "key")
+		assert.Empty(t, getErr)
+		assert.Equal(t, "value\n", getOut)
+	})
+
+	t.Run("get secret", func(t *testing.T) {
+		t.Parallel()
+
+		e, stackName, _, _ := createRemoteConfigStack(t)
+		envSetOut, envSetErr := e.RunCommand(
+			"pulumi", "env", "set", "pulumi-test/"+stackName, "pulumiConfig.pulumi-test:key", "--secret", "password")
+		assert.Empty(t, envSetOut)
+		assert.Empty(t, envSetErr)
+
+		getOut, getErr := e.RunCommand("pulumi", "config", "get", "key")
+		assert.Empty(t, getErr)
+		assert.Equal(t, "password\n", getOut)
+
+		configOut, configErr := e.RunCommand("pulumi", "config")
+		assert.Empty(t, configErr)
+		assert.Contains(t, configOut, "key", "includes key")
+		assert.NotContains(t, configOut, "password", "hides secret value")
+	})
+
+	t.Run("rm warning", func(t *testing.T) {
+		t.Parallel()
+
+		e, stackName, _, _ := createRemoteConfigStack(t)
+		configRmOut, configRmErr := e.RunCommandExpectError("pulumi", "config", "rm", "key")
+		assert.Empty(t, configRmOut)
+		expectedConfigRmErr := fmt.Sprintf(
+			"config rm not supported for remote stack config: "+
+				"use `pulumi env rm pulumi-test/%s pulumiConfig.pulumi-test:key",
+			stackName)
+		assert.Contains(t, configRmErr, expectedConfigRmErr, "direct user to use 'env rm'")
+
+		envRmOut, envRmErr := e.RunCommand("pulumi", "env", "rm", "pulumi-test/"+stackName, "pulumiConfig.foo")
+		assert.Empty(t, envRmOut)
+		assert.Empty(t, envRmErr)
+	})
 }
 
 func TestLocalStateLocking(t *testing.T) {

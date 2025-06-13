@@ -238,6 +238,9 @@ func (op TestOp) runWithContext(
 	}
 
 	updateOpts := opts.Options()
+	// We want to always run with plan generation to ensure that plans _can_ be generated.
+	// This is to prevent regressions such as https://github.com/pulumi/pulumi/pull/19750.
+	updateOpts.GeneratePlan = true
 	defer func() {
 		if updateOpts.Host != nil {
 			contract.IgnoreClose(updateOpts.Host)
@@ -673,17 +676,12 @@ func (p *TestPlan) RunWithName(t TB, snapshot *deploy.Snapshot, name string) *de
 			continue
 		}
 
-		if err != nil {
-			if result.IsBail(err) {
-				t.Logf("Got unexpected bail result: %v", err)
-				t.FailNow()
-			} else {
-				t.Logf("Got unexpected error result: %v", err)
-				t.FailNow()
-			}
+		errString := "unexpected error result"
+		if result.IsBail(err) {
+			errString = "unexpected bail result"
 		}
 
-		assert.NoError(t, err)
+		require.NoError(t, err, errString)
 	}
 
 	p.run++

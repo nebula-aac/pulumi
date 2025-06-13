@@ -148,6 +148,9 @@ func (ex *deploymentExecutor) Execute(callerCtx context.Context) (*Plan, error) 
 		}
 	}()
 
+	// Close the deployment when we're finished.
+	defer contract.IgnoreClose(ex.deployment)
+
 	// If this deployment is an import, run the imports and exit.
 	if ex.deployment.isImport {
 		return ex.importResources(callerCtx)
@@ -156,11 +159,18 @@ func (ex *deploymentExecutor) Execute(callerCtx context.Context) (*Plan, error) 
 	// Before doing anything else, optionally refresh each resource in the base checkpoint. If we're using
 	// refresh programs then we don't do this, we just run the step generator in refresh mode later.
 	if ex.deployment.opts.Refresh && !ex.deployment.opts.RefreshProgram {
-		if err := ex.refresh(callerCtx); err != nil {
+		if err := ex.refresh(callerCtx, false /*refreshBeforeUpdateOnly*/); err != nil {
 			return nil, err
 		}
 		if ex.deployment.opts.RefreshOnly {
 			return nil, nil
+		}
+	} else if !ex.deployment.opts.Refresh &&
+		!ex.deployment.opts.RefreshProgram &&
+		ex.deployment.hasRefreshBeforeUpdateResources {
+		// If there are resources that require a refresh before update, run a refresh for those resources.
+		if err := ex.refresh(callerCtx, true /*refreshBeforeUpdateOnly*/); err != nil {
+			return nil, err
 		}
 	} else if ex.deployment.prev != nil && len(ex.deployment.prev.PendingOperations) > 0 && !ex.deployment.opts.DryRun {
 		// Print a warning for users that there are pending operations.
@@ -178,6 +188,7 @@ func (ex *deploymentExecutor) Execute(callerCtx context.Context) (*Plan, error) 
 	if err != nil {
 		return nil, err
 	}
+	defer src.Close()
 
 	// Set up a step generator for this deployment.
 	mode := updateMode
@@ -521,6 +532,14 @@ func (ex *deploymentExecutor) handleSingleEvent(event SourceEvent) error {
 	var steps []Step
 	var err error
 	switch e := event.(type) {
+	case ContinueResourceImportEvent:
+		logging.V(4).Infof("deploymentExecutor.handleSingleEvent(...): received ContinueResourceImportEvent")
+		ex.asyncEventsExpected--
+		var async bool
+		steps, async, err = ex.stepGen.ContinueStepsFromImport(e)
+		if async {
+			ex.asyncEventsExpected++
+		}
 	case ContinueResourceRefreshEvent:
 		logging.V(4).Infof("deploymentExecutor.handleSingleEvent(...): received ContinueResourceRefreshEvent")
 		ex.asyncEventsExpected--
@@ -553,7 +572,6 @@ func (ex *deploymentExecutor) handleSingleEvent(event SourceEvent) error {
 	}
 	// Exclude the steps that depend on errored steps if ContinueOnError is set.
 	newSteps := slice.Prealloc[Step](len(steps))
-	skipped := false
 	for _, errored := range ex.stepExec.GetErroredSteps() {
 		ex.skipped.Add(errored.Res().URN)
 	}
@@ -561,15 +579,15 @@ func (ex *deploymentExecutor) handleSingleEvent(event SourceEvent) error {
 		if doesStepDependOn(step, ex.skipped) {
 			step.Skip()
 			ex.skipped.Add(step.Res().URN)
-			skipped = true
 			continue
 		}
 		newSteps = append(newSteps, step)
 	}
 
-	// If we pass an empty chain to the step executors the workers will shut down.  However we don't want that
-	// if we just skipped a step because its dependencies errored out.  Return early in that case.
-	if skipped && len(newSteps) == 0 {
+	// Don't bother passing an empty chain to the step executor. This might be if we just skipped a step
+	// because its dependencies errored out, or because the step gen returned no steps. Return early in that
+	// case.
+	if len(newSteps) == 0 {
 		return nil
 	}
 
@@ -618,7 +636,7 @@ func (ex *deploymentExecutor) importResources(callerCtx context.Context) (*Plan,
 }
 
 // refresh refreshes the state of the base checkpoint file for the current deployment in memory.
-func (ex *deploymentExecutor) refresh(callerCtx context.Context) error {
+func (ex *deploymentExecutor) refresh(callerCtx context.Context, refreshBeforeUpdateOnly bool) error {
 	prev := ex.deployment.prev
 	if prev == nil || len(prev.Resources) == 0 {
 		return nil
@@ -646,9 +664,21 @@ func (ex *deploymentExecutor) refresh(callerCtx context.Context) error {
 		excludesActual := ex.deployment.opts.Excludes
 
 		for _, res := range prev.Resources {
+			// If we're only doing RefreshBeforeUpdate refreshes and the resource isn't
+			// marked as such, skip it.
+			if refreshBeforeUpdateOnly && !res.RefreshBeforeUpdate {
+				continue
+			}
+
 			// If the resource is known to be excluded, we can skip this step
 			// entirely at this point.
 			if excludesActual.Contains(res.URN) {
+				continue
+			}
+
+			// If the resource is a view, skip it. Only the owning resource
+			// should have a refresh step.
+			if res.ViewOf != "" {
 				continue
 			}
 
@@ -678,7 +708,8 @@ func (ex *deploymentExecutor) refresh(callerCtx context.Context) error {
 					return fmt.Errorf("could not load provider for resource %v: %w", res.URN, err)
 				}
 
-				step := NewRefreshStep(ex.deployment, nil, res)
+				oldViews := ex.deployment.GetOldViews(res.URN)
+				step := NewRefreshStep(ex.deployment, nil, res, oldViews, nil)
 				steps = append(steps, step)
 				resourceToStep[res] = step
 			}
@@ -687,6 +718,18 @@ func (ex *deploymentExecutor) refresh(callerCtx context.Context) error {
 		targetsActual := ex.deployment.opts.Targets
 
 		for _, res := range prev.Resources {
+			// If we're only doing RefreshBeforeUpdate refreshes and the resource isn't
+			// marked as such, skip it.
+			if refreshBeforeUpdateOnly && !res.RefreshBeforeUpdate {
+				continue
+			}
+
+			// If the resource is a view, skip it. Only the owning resource
+			// should have a refresh step.
+			if res.ViewOf != "" {
+				continue
+			}
+
 			if targetsActual.Contains(res.URN) {
 				// For each resource we're going to refresh we need to ensure we have a provider for it
 				err := ex.deployment.EnsureProvider(res.Provider)
@@ -694,7 +737,8 @@ func (ex *deploymentExecutor) refresh(callerCtx context.Context) error {
 					return fmt.Errorf("could not load provider for resource %v: %w", res.URN, err)
 				}
 
-				step := NewRefreshStep(ex.deployment, nil, res)
+				oldViews := ex.deployment.GetOldViews(res.URN)
+				step := NewRefreshStep(ex.deployment, nil, res, oldViews, nil)
 				steps = append(steps, step)
 				resourceToStep[res] = step
 			} else if ex.deployment.opts.TargetDependents {
@@ -706,7 +750,8 @@ func (ex *deploymentExecutor) refresh(callerCtx context.Context) error {
 				// loop.
 				for _, dep := range allDeps {
 					if targetsActual.Contains(dep.URN) {
-						step := NewRefreshStep(ex.deployment, nil, res)
+						oldViews := ex.deployment.GetOldViews(res.URN)
+						step := NewRefreshStep(ex.deployment, nil, res, oldViews, nil)
 						steps = append(steps, step)
 						resourceToStep[res] = step
 
@@ -722,9 +767,18 @@ func (ex *deploymentExecutor) refresh(callerCtx context.Context) error {
 	ctx, cancel := context.WithCancel(callerCtx)
 
 	stepExec := newStepExecutor(ctx, cancel, ex.deployment, true)
+
 	stepExec.ExecuteParallel(steps)
 	stepExec.SignalCompletion()
 	stepExec.WaitForCompletion()
+
+	// Apply view refresh steps published to the resource status server, if any.
+	viewRefreshSteps := ex.deployment.resourceStatus.RefreshSteps()
+	for _, s := range ex.deployment.prev.Resources {
+		if step, has := viewRefreshSteps[s.URN]; has {
+			resourceToStep[s] = step
+		}
+	}
 
 	ex.rebuildBaseState(resourceToStep)
 
@@ -775,6 +829,7 @@ func (ex *deploymentExecutor) rebuildBaseState(resourceToStep map[*resource.Stat
 	resources := []*resource.State{}
 	referenceable := make(map[resource.URN]bool)
 	olds := make(map[resource.URN]*resource.State)
+	oldViews := make(map[resource.URN][]*resource.State)
 	for _, s := range ex.deployment.prev.Resources {
 		var old, new *resource.State
 		if step, has := resourceToStep[s]; has {
@@ -790,7 +845,7 @@ func (ex *deploymentExecutor) rebuildBaseState(resourceToStep map[*resource.Stat
 		}
 
 		if new == nil {
-			contract.Assertf(old.Custom, "expected custom resource")
+			contract.Assertf(old.Custom || old.ViewOf != "", "expected custom or view resource")
 			contract.Assertf(!providers.IsProviderType(old.Type), "expected non-provider resource")
 			continue
 		}
@@ -839,13 +894,20 @@ func (ex *deploymentExecutor) rebuildBaseState(resourceToStep map[*resource.Stat
 		// Do not record resources that are pending deletion in the "olds" lookup table.
 		if !new.Delete {
 			olds[new.URN] = new
+
+			// If this resource is a view of another resource, add it to the list of views for that resource.
+			if new.ViewOf != "" {
+				oldViews[new.ViewOf] = append(oldViews[new.ViewOf], new)
+			}
 		}
 	}
 
 	undangleParentResources(olds, resources)
 
 	ex.deployment.prev.Resources = resources
-	ex.deployment.olds, ex.deployment.depGraph = olds, graph.NewDependencyGraph(resources)
+	ex.deployment.depGraph = graph.NewDependencyGraph(resources)
+	ex.deployment.olds = olds
+	ex.deployment.oldViews = oldViews
 }
 
 func undangleParentResources(undeleted map[resource.URN]*resource.State, resources []*resource.State) {

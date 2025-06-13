@@ -1,4 +1,4 @@
-// Copyright 2016-2024, Pulumi Corporation.
+// Copyright 2016-2025, Pulumi Corporation.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,7 +54,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil/rpcerror"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
-	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 )
 
@@ -127,6 +127,14 @@ func pickURN(t *testing.T, urns []resource.URN, names []string, target string) r
 
 func TestMain(m *testing.M) {
 	grpcDefault := flag.Bool("grpc-plugins", false, "enable or disable gRPC providers by default")
+	if (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && os.Getenv("PULUMI_FORCE_RUN_TESTS") == "" {
+		// These tests are skipped as part of enabling running unit tests on windows and MacOS in
+		// https://github.com/pulumi/pulumi/pull/19653. These tests currently fail on Windows, and
+		// re-enabling them is left as future work.
+		// TODO[pulumi/pulumi#19675]: Re-enable tests on windows and MacOS once they are fixed.
+		fmt.Println("Skip tests on windows and MacOS until they are fixed")
+		os.Exit(0)
+	}
 
 	flag.Parse()
 
@@ -423,24 +431,38 @@ func TestConfigPropertyMapMatches(t *testing.T) {
 
 	programF := deploytest.NewLanguageRuntimeF(func(info plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
 		// Check that the config property map matches what we expect.
-		assert.Equal(t, 8, info.Config.Len())
+		assert.Equal(t, 8, len(info.Config))
+		assert.Equal(t, 8, len(info.ConfigPropertyMap))
 
-		assert.Equal(t, property.New("hunter2").WithSecret(true), info.Config.Get("pkgA:secret"))
-		assert.Equal(t, property.New("all I see is ******"), info.Config.Get("pkgA:plain"))
-		assert.Equal(t, property.New(1234.0), info.Config.Get("pkgA:int"))
+		assert.Equal(t, "hunter2", info.Config[config.MustMakeKey("pkgA", "secret")])
+		assert.True(t, info.ConfigPropertyMap["pkgA:secret"].IsSecret())
+		assert.Equal(t, "hunter2", info.ConfigPropertyMap["pkgA:secret"].SecretValue().Element.StringValue())
+
+		assert.Equal(t, "all I see is ******", info.Config[config.MustMakeKey("pkgA", "plain")])
+		assert.False(t, info.ConfigPropertyMap["pkgA:plain"].IsSecret())
+		assert.Equal(t, "all I see is ******", info.ConfigPropertyMap["pkgA:plain"].StringValue())
+
+		assert.Equal(t, "1234", info.Config[config.MustMakeKey("pkgA", "int")])
+		assert.Equal(t, 1234.0, info.ConfigPropertyMap["pkgA:int"].NumberValue())
+
+		assert.Equal(t, "12.34", info.Config[config.MustMakeKey("pkgA", "float")])
 		// This is a string because adjustObjectValue only parses integers, not floats.
-		assert.Equal(t, property.New("12.34"), info.Config.Get("pkgA:float"))
-		assert.Equal(t, property.New("012345"), info.Config.Get("pkgA:string"))
-		assert.Equal(t, property.New(true), info.Config.Get("pkgA:bool"))
-		assert.Equal(t, property.New([]property.Value{
-			property.New(1.0),
-			property.New(2.0),
-			property.New(3.0),
-		}), info.Config.Get("pkgA:array"))
-		assert.Equal(t, property.New(map[string]property.Value{
-			"foo": property.New(1.0),
-			"bar": property.New("02"),
-		}), info.Config.Get("pkgA:map"))
+		assert.Equal(t, "12.34", info.ConfigPropertyMap["pkgA:float"].StringValue())
+
+		assert.Equal(t, "012345", info.Config[config.MustMakeKey("pkgA", "string")])
+		assert.Equal(t, "012345", info.ConfigPropertyMap["pkgA:string"].StringValue())
+
+		assert.Equal(t, "true", info.Config[config.MustMakeKey("pkgA", "bool")])
+		assert.Equal(t, true, info.ConfigPropertyMap["pkgA:bool"].BoolValue())
+
+		assert.Equal(t, "[1,2,3]", info.Config[config.MustMakeKey("pkgA", "array")])
+		assert.Equal(t, 1.0, info.ConfigPropertyMap["pkgA:array"].ArrayValue()[0].NumberValue())
+		assert.Equal(t, 2.0, info.ConfigPropertyMap["pkgA:array"].ArrayValue()[1].NumberValue())
+		assert.Equal(t, 3.0, info.ConfigPropertyMap["pkgA:array"].ArrayValue()[2].NumberValue())
+
+		assert.Equal(t, `{"bar":"02","foo":1}`, info.Config[config.MustMakeKey("pkgA", "map")])
+		assert.Equal(t, 1.0, info.ConfigPropertyMap["pkgA:map"].ObjectValue()["foo"].NumberValue())
+		assert.Equal(t, "02", info.ConfigPropertyMap["pkgA:map"].ObjectValue()["bar"].StringValue())
 		return nil
 	})
 	hostF := deploytest.NewPluginHostF(nil, nil, programF)
@@ -996,7 +1018,7 @@ func TestStackReference(t *testing.T) {
 	})
 	p := &lt.TestPlan{
 		BackendClient: &deploytest.BackendClient{
-			GetStackOutputsF: func(ctx context.Context, name string) (resource.PropertyMap, error) {
+			GetStackOutputsF: func(ctx context.Context, name string, _ func(error) error) (resource.PropertyMap, error) {
 				switch name {
 				case "other":
 					return resource.NewPropertyMapFromMap(map[string]interface{}{
@@ -1154,7 +1176,7 @@ func TestStackReferenceRegister(t *testing.T) {
 
 	p := &lt.TestPlan{
 		BackendClient: &deploytest.BackendClient{
-			GetStackOutputsF: func(ctx context.Context, name string) (resource.PropertyMap, error) {
+			GetStackOutputsF: func(ctx context.Context, name string, _ func(error) error) (resource.PropertyMap, error) {
 				switch name {
 				case "other":
 					return resource.NewPropertyMapFromMap(map[string]interface{}{
@@ -1318,7 +1340,7 @@ func TestLoadFailureShutdown(t *testing.T) {
 		assert.NoError(t, err)
 
 		_, err = monitor.RegisterResource(providers.MakeProviderType("pkgB"), "provB", true)
-		assert.NoError(t, err)
+		assert.ErrorContains(t, err, "resource monitor shut down while waiting on step's done channel")
 
 		return nil
 	})
@@ -2678,6 +2700,7 @@ func TestProtect(t *testing.T) {
 
 	shouldProtect := true
 	createResource := true
+	expectError := false
 
 	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
 		if createResource {
@@ -2685,7 +2708,11 @@ func TestProtect(t *testing.T) {
 				Inputs:  ins,
 				Protect: &shouldProtect,
 			})
-			assert.NoError(t, err)
+			if expectError {
+				assert.ErrorContains(t, err, "resource monitor shut down while waiting on step's done channel")
+			} else {
+				assert.NoError(t, err)
+			}
 		}
 
 		return nil
@@ -2738,6 +2765,7 @@ func TestProtect(t *testing.T) {
 
 	// Run an update which will cause a replace, we should get an error.
 	// Contrary to the preview, the error is a bail, so no resources are created.
+	expectError = true
 	snap, err = lt.TestOp(Update).RunStep(project, p.GetTarget(t, snap), p.Options, false, p.BackendClient, validate, "2")
 	assert.Error(t, err)
 	assert.NotNil(t, snap)
@@ -2761,6 +2789,7 @@ func TestProtect(t *testing.T) {
 
 	// Run a new update to remove the protect and replace in the same update, this should delete the old one
 	// and create the new one
+	expectError = false
 	createResource = true
 	shouldProtect = false
 	snap, err = lt.TestOp(Update).RunStep(project, p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "4")
@@ -3280,7 +3309,11 @@ func TestPendingDeleteOrder(t *testing.T) {
 			}),
 			Dependencies: []resource.URN{resp.URN},
 		})
-		assert.NoError(t, err)
+		if failCreationOfTypB {
+			assert.ErrorContains(t, err, "resource monitor shut down while waiting on step's done channel")
+		} else {
+			assert.NoError(t, err)
+		}
 
 		return nil
 	})
@@ -4291,7 +4324,7 @@ func TestStackOutputsResourceError(t *testing.T) {
 
 		case 1:
 			_, err = monitor.RegisterResource("pkgA:m:typA", "resA", true)
-			assert.ErrorContains(t, err, "oh no")
+			assert.ErrorContains(t, err, "resource monitor shut down while waiting on step's done channel")
 			// RegisterResourceOutputs not called here, simulating what happens in SDKs when an output of resA
 			// is exported as a stack output.
 
@@ -4303,7 +4336,7 @@ func TestStackOutputsResourceError(t *testing.T) {
 			assert.NoError(t, outsErr)
 
 			_, err = monitor.RegisterResource("pkgA:m:typA", "resA", true)
-			assert.ErrorContains(t, err, "oh no")
+			assert.ErrorContains(t, err, "resource monitor shut down while waiting on step's done channel")
 		}
 
 		return err

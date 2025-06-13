@@ -47,7 +47,7 @@ export class Stack {
     /**
      * The name identifying the stack.
      */
-    readonly name: string;
+    name: string;
 
     /**
      * The {@link Workspace} the stack was created from.
@@ -662,6 +662,8 @@ Event: ${line}\n${e.toString()}`);
             throw new Error("can't enable `showSecrets` for remote workspaces");
         }
 
+        this.name = options.stackName;
+
         const summary = await this.info(!this.isRemote && options?.showSecrets);
 
         return {
@@ -1049,6 +1051,9 @@ function applyGlobalOpts(opts: GlobalOpts, args: string[]) {
     if (opts.suppressProgress) {
         args.push("--suppress-progress");
     }
+    if (opts.configFile) {
+        args.push("--config-file", opts.configFile);
+    }
 }
 
 /**
@@ -1355,6 +1360,11 @@ export interface GlobalOpts {
      * Suppress display of periodic progress dots.
      */
     suppressProgress?: boolean;
+
+    /**
+     * Use the configuration values in the specified file rather than detecting the file name.
+     */
+    configFile?: string;
 
     /**
      * Save any creates seen during the preview into an import file to use with `pulumi import`.

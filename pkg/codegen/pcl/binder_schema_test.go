@@ -15,6 +15,7 @@
 package pcl
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -31,7 +32,7 @@ func BenchmarkLoadPackage(b *testing.B) {
 	loader := schema.NewPluginLoader(utils.NewHost(testdataPath))
 
 	for n := 0; n < b.N; n++ {
-		_, err := NewPackageCache().loadPackageSchema(loader, "aws", "")
+		_, err := NewPackageCache().loadPackageSchema(context.Background(), loader, "aws", "", "")
 		if err != nil {
 			b.Fatalf("failed to load package schema: %v", err)
 		}
@@ -40,19 +41,16 @@ func BenchmarkLoadPackage(b *testing.B) {
 
 func TestGenEnum(t *testing.T) {
 	t.Parallel()
-	enum := &model.EnumType{
-		Elements: []cty.Value{
+	enum := model.NewEnumType(
+		"my:enum", model.StringType,
+		[]cty.Value{
 			cty.StringVal("foo"),
 			cty.StringVal("bar"),
 		},
-		Type:  model.StringType,
-		Token: "my:enum",
-		Annotations: []interface{}{
-			enumSchemaType{
-				Type: &schema.EnumType{Elements: []*schema.Enum{{Value: "foo"}, {Value: "bar"}}},
-			},
+		enumSchemaType{
+			Type: &schema.EnumType{Elements: []*schema.Enum{{Value: "foo"}, {Value: "bar"}}},
 		},
-	}
+	)
 	safeEnumFunc := func(member *schema.Enum) {}
 	unsafeEnumFunc := func(from model.Expression) {}
 

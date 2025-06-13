@@ -25,12 +25,17 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	"github.com/pulumi/pulumi/pkg/v3/backend/backenderr"
+	"github.com/pulumi/pulumi/pkg/v3/backend/diy/unauthenticatedregistry"
+	cmdBackend "github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/backend"
 	"github.com/pulumi/pulumi/pkg/v3/util"
+	pkgWorkspace "github.com/pulumi/pulumi/pkg/v3/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/diag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/diag/colors"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/encoding"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/env"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/registry"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
@@ -82,13 +87,20 @@ type pluginInstallCmd struct {
 	reinstall bool
 	checksum  string
 
-	diag  diag.Sink
-	env   env.Env
-	color colors.Colorization
+	diag     diag.Sink
+	env      env.Env
+	color    colors.Colorization
+	registry registry.Registry
 
 	pluginGetLatestVersion func(
 		workspace.PluginSpec, context.Context,
 	) (*semver.Version, error) // == workspace.PluginSpec.GetLatestVersion
+
+	installPluginSpec func(
+		ctx context.Context, label string,
+		install workspace.PluginSpec, file string,
+		sink diag.Sink, color colors.Colorization, reinstall bool,
+	) error // == installPluginSpec
 }
 
 func (cmd *pluginInstallCmd) Run(ctx context.Context, args []string) error {
@@ -103,6 +115,23 @@ func (cmd *pluginInstallCmd) Run(ctx context.Context, args []string) error {
 	}
 	if cmd.pluginGetLatestVersion == nil {
 		cmd.pluginGetLatestVersion = (workspace.PluginSpec).GetLatestVersion
+	}
+	if cmd.installPluginSpec == nil {
+		cmd.installPluginSpec = installPluginSpec
+	}
+	if cmd.registry == nil {
+		cmd.registry = registry.NewOnDemandRegistry(func() (registry.Registry, error) {
+			b, err := cmdBackend.NonInteractiveCurrentBackend(
+				ctx, pkgWorkspace.Instance, cmdBackend.DefaultLoginManager, nil,
+			)
+			if err == nil && b != nil {
+				return b.GetReadOnlyPackageRegistry(), nil
+			}
+			if b == nil || errors.Is(err, backenderr.ErrLoginRequired) {
+				return unauthenticatedregistry.New(cmd.diag, cmd.env), nil
+			}
+			return nil, fmt.Errorf("could not get registry backend: %w", err)
+		})
 	}
 
 	// Parse the kind, name, and version, if specified.
@@ -137,7 +166,8 @@ func (cmd *pluginInstallCmd) Run(ctx context.Context, args []string) error {
 			}
 		}
 
-		pluginSpec, err := workspace.NewPluginSpec(args[1], apitype.PluginKind(args[0]), version, cmd.serverURL, checksums)
+		pluginSpec, err := workspace.NewPluginSpec(ctx,
+			args[1], apitype.PluginKind(args[0]), version, cmd.serverURL, checksums)
 		if err != nil {
 			return err
 		}
@@ -162,8 +192,33 @@ func (cmd *pluginInstallCmd) Run(ctx context.Context, args []string) error {
 				diag.Message("", "Plugin download URL set to %s"), pluginSpec.PluginDownloadURL)
 		}
 
+		if pluginSpec.Kind == apitype.ResourcePlugin && // The registry only supports resource plugins
+			!cmd.env.GetBool(env.DisableRegistryResolve) &&
+			pluginSpec.PluginDownloadURL == "" { // Don't override explicit pluginDownloadURLs
+			pkgMetadata, err := registry.ResolvePackageFromName(ctx, cmd.registry, pluginSpec.Name, pluginSpec.Version)
+			if err == nil {
+				pluginSpec.Name = pkgMetadata.Name
+				pluginSpec.PluginDownloadURL = pkgMetadata.PluginDownloadURL
+			} else if errors.Is(err, registry.ErrNotFound) &&
+				registry.PulumiPublishedBeforeRegistry(pluginSpec.Name) {
+				// If the error is [registry.ErrNotFound], then this could
+				// be a Pulumi plugin that isn't in the registry.
+				//
+				// We just ignore the failure in the hope that the
+				// download against GitHub will succeed.
+			} else {
+				for _, suggested := range registry.GetSuggestedPackages(err) {
+					cmd.diag.Infof(diag.Message("", "%s/%s/%s@%s is a similar package"),
+						suggested.Source, suggested.Publisher, suggested.Name,
+						suggested.Version,
+					)
+				}
+				return fmt.Errorf("Unable to resolve package from name: %w", err)
+			}
+		}
+
 		// If we don't have a version try to look one up
-		if version == nil {
+		if version == nil && pluginSpec.Version == nil {
 			latestVersion, err := cmd.pluginGetLatestVersion(pluginSpec, ctx)
 			if err != nil {
 				return err
@@ -214,43 +269,53 @@ func (cmd *pluginInstallCmd) Run(ctx context.Context, args []string) error {
 			}
 		}
 
-		cmdutil.Diag().Infoerrf(
-			diag.Message("", "%s installing"), label)
-
-		// If we got here, actually try to do the download.
-		var source string
-		var payload workspace.PluginContent
-		var err error
-		if cmd.file == "" {
-			withProgress := func(stream io.ReadCloser, size int64) io.ReadCloser {
-				return workspace.ReadCloserProgressBar(stream, size, "Downloading plugin", cmd.color)
-			}
-			retry := func(err error, attempt int, limit int, delay time.Duration) {
-				cmd.diag.Warningf(
-					diag.Message("", "Error downloading plugin: %s\nWill retry in %v [%d/%d]"), err, delay, attempt, limit)
-			}
-
-			r, err := workspace.DownloadToFile(ctx, install, withProgress, retry)
-			if err != nil {
-				return fmt.Errorf("%s downloading from %s: %w", label, install.PluginDownloadURL, err)
-			}
-			defer func() { contract.IgnoreError(os.Remove(r.Name())) }()
-
-			payload = workspace.TarPlugin(r)
-		} else {
-			source = cmd.file
-			logging.V(1).Infof("%s opening tarball from %s", label, cmd.file)
-			payload, err = getFilePayload(cmd.file, install)
-			if err != nil {
-				return err
-			}
-		}
-		logging.V(1).Infof("%s installing tarball ...", label)
-		if err = install.InstallWithContext(ctx, payload, cmd.reinstall); err != nil {
-			return fmt.Errorf("installing %s from %s: %w", label, source, err)
+		cmd.diag.Infoerrf(diag.Message("", "%s installing"), label)
+		err := cmd.installPluginSpec(ctx, label, install, cmd.file, cmd.diag, cmd.color, cmd.reinstall)
+		if err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+func installPluginSpec(
+	ctx context.Context, label string,
+	install workspace.PluginSpec, file string,
+	sink diag.Sink, color colors.Colorization, reinstall bool,
+) error {
+	// If we got here, actually try to do the download.
+	var source string
+	var payload workspace.PluginContent
+	var err error
+	if file == "" {
+		withProgress := func(stream io.ReadCloser, size int64) io.ReadCloser {
+			return workspace.ReadCloserProgressBar(stream, size, "Downloading plugin", color)
+		}
+		retry := func(err error, attempt int, limit int, delay time.Duration) {
+			sink.Warningf(
+				diag.Message("", "Error downloading plugin: %s\nWill retry in %v [%d/%d]"), err, delay, attempt, limit)
+		}
+
+		r, err := workspace.DownloadToFile(ctx, install, withProgress, retry)
+		if err != nil {
+			return fmt.Errorf("%s downloading from %s: %w", label, install.PluginDownloadURL, err)
+		}
+		defer func() { contract.IgnoreError(os.Remove(r.Name())) }()
+
+		payload = workspace.TarPlugin(r)
+	} else {
+		source = file
+		logging.V(1).Infof("%s opening tarball from %s", label, file)
+		payload, err = getFilePayload(file, install)
+		if err != nil {
+			return err
+		}
+	}
+	logging.V(1).Infof("%s installing tarball ...", label)
+	if err = install.InstallWithContext(ctx, payload, reinstall); err != nil {
+		return fmt.Errorf("installing %s from %s: %w", label, source, err)
+	}
 	return nil
 }
 

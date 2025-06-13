@@ -15,7 +15,6 @@
 package lifecycletest
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -30,7 +29,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
-	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -48,7 +46,7 @@ func (p *testRequiredPolicy) Version() string {
 	return p.version
 }
 
-func (p *testRequiredPolicy) Install(_ context.Context) (string, error) {
+func (p *testRequiredPolicy) Install(_ *plugin.Context) (string, error) {
 	return "", nil
 }
 
@@ -76,12 +74,12 @@ func TestSimpleAnalyzer(t *testing.T) {
 			assert.Equal(t, "test-proj", opts.Project)
 			assert.Equal(t, "test", opts.Stack)
 
-			assert.Equal(t, property.NewMap(map[string]property.Value{
-				opts.Project + ":bool":   property.New(true),
-				opts.Project + ":float":  property.New(1.5),
-				opts.Project + ":string": property.New("hello"),
-				opts.Project + ":obj":    property.New(property.NewMap(map[string]property.Value{"key": property.New("value")})),
-			}), opts.Config)
+			assert.Equal(t, map[config.Key]string{
+				config.MustMakeKey(opts.Project, "bool"):   "true",
+				config.MustMakeKey(opts.Project, "float"):  "1.5",
+				config.MustMakeKey(opts.Project, "string"): "hello",
+				config.MustMakeKey(opts.Project, "obj"):    "{\"key\":\"value\"}",
+			}, opts.Config)
 
 			return &deploytest.Analyzer{}, nil
 		}),
@@ -353,7 +351,7 @@ func TestRemediateFailure(t *testing.T) {
 
 	program := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
 		_, err := monitor.RegisterResource("pkgA:m:typA", "resA", true)
-		assert.NoError(t, err)
+		assert.ErrorContains(t, err, "context canceled")
 		return nil
 	})
 	host := deploytest.NewPluginHostF(nil, nil, program, loaders...)

@@ -70,6 +70,7 @@ func NewLogsCmd() *cobra.Command {
 
 			s, err := cmdStack.RequireStack(
 				ctx,
+				cmdutil.Diag(),
 				ws,
 				backend.DefaultLoginManager,
 				stackName,
@@ -80,7 +81,7 @@ func NewLogsCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, sm, err := config.GetStackConfiguration(ctx, ssml, s, proj)
+			cfg, sm, err := config.GetStackConfiguration(ctx, cmdutil.Diag(), ssml, s, proj)
 			if err != nil {
 				return fmt.Errorf("getting stack configuration: %w", err)
 			}

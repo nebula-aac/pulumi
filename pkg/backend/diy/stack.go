@@ -16,6 +16,7 @@ package diy
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -53,7 +54,18 @@ func newStack(ref *diyBackendReference, b *diyBackend) backend.Stack {
 	}
 }
 
-func (s *diyStack) Ref() backend.StackReference { return s.ref }
+func (s *diyStack) Ref() backend.StackReference                 { return s.ref }
+func (s *diyStack) ConfigLocation() backend.StackConfigLocation { return backend.StackConfigLocation{} }
+
+func (s *diyStack) LoadRemoteConfig(ctx context.Context, project *workspace.Project) (*workspace.ProjectStack, error) {
+	return nil, errors.New("remote config not implemented for the DIY backend")
+}
+
+func (s *diyStack) SaveRemoteConfig(ctx context.Context, projectStack *workspace.ProjectStack) error {
+	// TODO: https://github.com/pulumi/pulumi/issues/19557
+	return errors.New("remote config not implemented for the DIY backend")
+}
+
 func (s *diyStack) Snapshot(ctx context.Context, secretsProvider secrets.Provider) (*deploy.Snapshot, error) {
 	if v := s.snapshot.Load(); v != nil {
 		return *v, nil
@@ -85,8 +97,10 @@ func (s *diyStack) Preview(
 	return backend.PreviewStack(ctx, s, op, events)
 }
 
-func (s *diyStack) Update(ctx context.Context, op backend.UpdateOperation) (display.ResourceChanges, error) {
-	return backend.UpdateStack(ctx, s, op)
+func (s *diyStack) Update(ctx context.Context,
+	op backend.UpdateOperation, events chan<- engine.Event,
+) (display.ResourceChanges, error) {
+	return backend.UpdateStack(ctx, s, op, events)
 }
 
 func (s *diyStack) Import(ctx context.Context, op backend.UpdateOperation,

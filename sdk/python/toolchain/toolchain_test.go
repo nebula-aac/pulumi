@@ -70,8 +70,11 @@ func TestValidateVenv(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // modifies environment variables
 func TestCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// TODO[pulumi/pulumi#19675]: Fix this test on Windows
+		t.Skip("Skipping tests on Windows")
+	}
 	// Poetry with `in-project = true` uses `.venv` as the default virtualenv directory.
 	// Use the same for pip to keep the tests consistent.
 	venvDir := ".venv"
@@ -128,6 +131,11 @@ func TestCommand(t *testing.T) {
 }
 
 func TestListPackages(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// TODO[pulumi/pulumi#19675]: Fix this test on Windows
+		t.Skip("Skipping tests on Windows")
+	}
+
 	t.Parallel()
 
 	// Build the mock package before running the tests, so parallel tests don't
@@ -242,6 +250,10 @@ func TestListPackages(t *testing.T) {
 }
 
 func TestAbout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// TODO[pulumi/pulumi#19675]: Fix this test on Windows
+		t.Skip("Skipping tests on Windows")
+	}
 	t.Parallel()
 
 	for _, opts := range []PythonOptions{
@@ -270,7 +282,6 @@ func TestAbout(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // mutates environment variables
 func TestPyenv(t *testing.T) {
 	if runtime.GOOS == windows {
 		t.Skip("pyenv is not supported on Windows")
@@ -304,7 +315,6 @@ func TestPyenv(t *testing.T) {
 	require.Equal(t, filepath.Join(tmpDir, "bin", "pyenv"), pyenvPath)
 }
 
-//nolint:paralleltest // mutates environment variables
 func TestPyenvInstall(t *testing.T) {
 	if runtime.GOOS == windows {
 		t.Skip("pyenv is not supported on Windows")

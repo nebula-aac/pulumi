@@ -1,4 +1,4 @@
-// Copyright 2016-2023, Pulumi Corporation.
+// Copyright 2016-2025, Pulumi Corporation.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/util/cancel"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/diag"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/registry"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
@@ -173,7 +174,8 @@ type Backend interface {
 		ctx context.Context, stack Stack, op UpdateOperation, events chan<- engine.Event,
 	) (*deploy.Plan, sdkDisplay.ResourceChanges, error)
 	// Update updates the target stack with the current workspace's contents (config and code).
-	Update(ctx context.Context, stack Stack, op UpdateOperation) (sdkDisplay.ResourceChanges, error)
+	Update(ctx context.Context, stack Stack, op UpdateOperation, events chan<- engine.Event,
+	) (sdkDisplay.ResourceChanges, error)
 	// Import imports resources into a stack.
 	Import(ctx context.Context, stack Stack, op UpdateOperation,
 		imports []deploy.Import) (sdkDisplay.ResourceChanges, error)
@@ -241,8 +243,17 @@ type Backend interface {
 	// to ListTemplates.
 	DownloadTemplate(ctx context.Context, orgName, sourceURL string) (TarReaderCloser, error)
 
-	// GetPackageRegistry returns a PackageRegistry object tied to this backend
+	// GetPackageRegistry returns a PackageRegistry object tied to this backend. Not
+	// all backends are required to support GetPackageRegistry. Those that don't
+	// should return a non-nil error when GetPackageRegistry is called.
+	//
+	// PackageRegistry is a superset of [registry.Registry] that supports publishing
+	// packages.
 	GetPackageRegistry() (PackageRegistry, error)
+
+	// GetReadOnlyPackageRegistry retusn a [registry.Registry] object tied to this
+	// backend. All backends should support GetReadOnlyPackageRegistry.
+	GetReadOnlyPackageRegistry() registry.Registry
 }
 
 // EnvironmentsBackend is an interface that defines an optional capability for a backend to work with environments.
@@ -344,7 +355,11 @@ type backendClient struct {
 }
 
 // GetStackOutputs returns the outputs of the stack with the given name.
-func (c *backendClient) GetStackOutputs(ctx context.Context, name string) (resource.PropertyMap, error) {
+func (c *backendClient) GetStackOutputs(
+	ctx context.Context,
+	name string,
+	onDecryptError func(err error) error,
+) (resource.PropertyMap, error) {
 	ref, err := c.backend.ParseStackReference(name)
 	if err != nil {
 		return nil, err
@@ -356,14 +371,18 @@ func (c *backendClient) GetStackOutputs(ctx context.Context, name string) (resou
 	if s == nil {
 		return nil, fmt.Errorf("unknown stack %q", name)
 	}
-	snap, err := s.Snapshot(ctx, c.secretsProvider)
+
+	secretsProvider := newErrorCatchingSecretsProvider(c.secretsProvider, onDecryptError)
+	snap, err := s.Snapshot(ctx, secretsProvider)
 	if err != nil {
 		return nil, err
 	}
+
 	res, err := stack.GetRootStackResource(snap)
 	if err != nil {
 		return nil, fmt.Errorf("getting root stack resources: %w", err)
 	}
+
 	if res == nil {
 		return resource.PropertyMap{}, nil
 	}

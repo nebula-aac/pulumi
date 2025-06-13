@@ -267,6 +267,7 @@ func NewPreviewCmd() *cobra.Command {
 	var eventLogPath string
 	var parallel int32
 	var refresh string
+	var runProgram bool
 	var showConfig bool
 	var showPolicyRemediations bool
 	var showReplacementSteps bool
@@ -281,7 +282,7 @@ func NewPreviewCmd() *cobra.Command {
 	var targetReplaces []string
 	var targetDependents bool
 	var excludeDependents bool
-	var attachDebugger bool
+	var attachDebugger []string
 
 	// Flags for Copilot.
 	var copilotEnabled bool
@@ -310,6 +311,12 @@ func NewPreviewCmd() *cobra.Command {
 		Args: cmdArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			err := validateAttachDebuggerFlag(attachDebugger)
+			if err != nil {
+				return err
+			}
+
 			ssml := cmdStack.NewStackSecretsManagerLoaderFromEnv()
 			ws := pkgWorkspace.Instance
 			displayType := display.DisplayProgress
@@ -346,7 +353,7 @@ func NewPreviewCmd() *cobra.Command {
 				err := deployment.ValidateUnsupportedRemoteFlags(expectNop, configArray, configPath, client, jsonDisplay,
 					policyPackPaths, policyPackConfigPaths, refresh, showConfig, showPolicyRemediations,
 					showReplacementSteps, showSames, showReads, suppressOutputs, "default", &targets, nil, replaces,
-					targetReplaces, targetDependents, planFilePath, cmdStack.ConfigFile, false)
+					targetReplaces, targetDependents, planFilePath, cmdStack.ConfigFile, runProgram)
 				if err != nil {
 					return err
 				}
@@ -382,6 +389,7 @@ func NewPreviewCmd() *cobra.Command {
 
 			s, err := cmdStack.RequireStack(
 				ctx,
+				cmdutil.Diag(),
 				ws,
 				cmdBackend.DefaultLoginManager,
 				stackName,
@@ -393,7 +401,7 @@ func NewPreviewCmd() *cobra.Command {
 			}
 
 			// Save any config values passed via flags.
-			if err = parseAndSaveConfigArray(ws, s, configArray, configPath); err != nil {
+			if err = parseAndSaveConfigArray(ctx, cmdutil.Diag(), ws, s, configArray, configPath); err != nil {
 				return err
 			}
 
@@ -402,7 +410,7 @@ func NewPreviewCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, sm, err := config.GetStackConfiguration(ctx, ssml, s, proj)
+			cfg, sm, err := config.GetStackConfiguration(ctx, cmdutil.Diag(), ssml, s, proj)
 			if err != nil {
 				return fmt.Errorf("getting stack configuration: %w", err)
 			}
@@ -460,6 +468,7 @@ func NewPreviewCmd() *cobra.Command {
 					Debug:                     debug,
 					ShowSecrets:               showSecrets,
 					Refresh:                   refreshOption,
+					RefreshProgram:            runProgram,
 					ReplaceTargets:            deploy.NewUrnTargets(replaceURNs),
 					UseLegacyDiff:             env.EnableLegacyDiff.Value(),
 					UseLegacyRefreshDiff:      env.EnableLegacyRefreshDiff.Value(),
@@ -639,6 +648,10 @@ func NewPreviewCmd() *cobra.Command {
 		"Refresh the state of the stack's resources before this update")
 	cmd.PersistentFlags().Lookup("refresh").NoOptDefVal = "true"
 	cmd.PersistentFlags().BoolVar(
+		&runProgram, "run-program", env.RunProgram.Value(),
+		"Run the program to determine up-to-date state for providers to refresh resources,"+
+			" this only applies if --refresh is set")
+	cmd.PersistentFlags().BoolVar(
 		&showConfig, "show-config", false,
 		"Show configuration keys and variables")
 	cmd.PersistentFlags().BoolVar(
@@ -664,19 +677,16 @@ func NewPreviewCmd() *cobra.Command {
 		&suppressPermalink, "suppress-permalink", "",
 		"Suppress display of the state permalink")
 	cmd.Flag("suppress-permalink").NoOptDefVal = "false"
-	cmd.PersistentFlags().BoolVar(
-		&attachDebugger, "attach-debugger", false,
-		"Enable the ability to attach a debugger to the program being executed")
+	//nolint:lll // long description
+	cmd.PersistentFlags().StringArrayVar(
+		&attachDebugger, "attach-debugger", []string{},
+		"Enable the ability to attach a debugger to the program and source based plugins being executed. Can limit debug type to 'program', 'plugins', 'plugin:<name>' or 'all'.")
+	cmd.Flag("attach-debugger").NoOptDefVal = "program"
 
 	cmd.PersistentFlags().BoolVar(
 		&copilotEnabled, "copilot", false,
 		"Enable Pulumi Copilot's assistance for improved CLI experience and insights."+
 			"(can also be set with PULUMI_COPILOT environment variable)")
-	// hide the copilot-summary flag for now. (Soft-release)
-	contract.AssertNoErrorf(
-		cmd.PersistentFlags().MarkHidden("copilot"),
-		`Could not mark "copilot" as hidden`,
-	)
 
 	// Remote flags
 	remoteArgs.ApplyFlags(cmd)

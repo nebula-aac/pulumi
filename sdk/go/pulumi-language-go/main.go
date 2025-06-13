@@ -832,7 +832,7 @@ func (c *debugger) Cleanup() {
 	contract.IgnoreError(os.Remove(c.LogDest))
 }
 
-func debugCommand(bin string) (*exec.Cmd, *debugger, error) {
+func debugCommand(ctx context.Context, bin string, binArgs ...string) (*exec.Cmd, *debugger, error) {
 	godlv, err := executable.FindExecutable("dlv")
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to find 'dlv' executable: %w", err)
@@ -849,11 +849,15 @@ func debugCommand(bin string) (*exec.Cmd, *debugger, error) {
 		args = append(args, "--listen=127.0.0.1:"+strconv.Itoa(port))
 	}
 	args = append(args, "exec", bin)
-	dlvCmd := exec.Command(godlv, args...)
+	if len(binArgs) > 0 {
+		args = append(args, "")
+		args = append(args, binArgs...)
+	}
+	dlvCmd := exec.CommandContext(ctx, godlv, args...)
 	return dlvCmd, &debugger{Host: "127.0.0.1", LogDest: logFile.Name()}, nil
 }
 
-func startDebugging(ctx context.Context, engineClient pulumirpc.EngineClient, dbg *debugger) error {
+func startDebugging(ctx context.Context, engineClient pulumirpc.EngineClient, dbg *debugger, name string) error {
 	// wait for the debugger to be ready
 	ctx, cancel := context.WithTimeoutCause(ctx, 1*time.Minute, errors.New("debugger startup timed out"))
 	defer cancel()
@@ -863,7 +867,7 @@ func startDebugging(ctx context.Context, engineClient pulumirpc.EngineClient, db
 	}
 
 	debugConfig, err := structpb.NewStruct(map[string]interface{}{
-		"name":    "Pulumi: Program (Go)",
+		"name":    name,
 		"type":    "go",
 		"request": "attach",
 		"mode":    "remote",
@@ -895,7 +899,7 @@ func runProgram(
 	var dbg *debugger
 	var cmd *exec.Cmd
 	if req.GetAttachDebugger() {
-		cmd, dbg, err = debugCommand(bin)
+		cmd, dbg, err = debugCommand(ctx, bin)
 		if err != nil {
 			return &pulumirpc.RunResponse{
 				Error: err.Error(),
@@ -906,7 +910,7 @@ func runProgram(
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		go func() {
-			err := startDebugging(ctx, engineClient, dbg)
+			err := startDebugging(ctx, engineClient, dbg, "Pulumi: Program (Go)")
 			if err != nil {
 				// kill the program if we can't start debugging.
 				logging.Errorf("Unable to start debugging: %v", err)
@@ -914,7 +918,7 @@ func runProgram(
 			}
 		}()
 	} else {
-		cmd = exec.Command(bin)
+		cmd = exec.CommandContext(ctx, bin)
 	}
 	cmd.Dir = pwd
 	cmd.Env = env
@@ -1209,6 +1213,16 @@ func (host *goLanguageHost) RunPlugin(
 ) error {
 	logging.V(5).Infof("Attempting to run go plugin in %s", req.Info.ProgramDirectory)
 
+	if host.engineAddress == "" {
+		return errors.New("when debugging or running explicitly, must call Handshake before RunPlugin")
+	}
+
+	engineClient, closer, err := host.connectToEngine()
+	if err != nil {
+		return err
+	}
+	defer contract.IgnoreClose(closer)
+
 	program, err := compileProgram(req.Info.ProgramDirectory, "", false)
 	if err != nil {
 		return errutil.ErrorWithStderr(err, "error in compiling Go")
@@ -1222,10 +1236,31 @@ func (host *goLanguageHost) RunPlugin(
 	// best effort close, but we try an explicit close and error check at the end as well
 	defer closer.Close()
 
-	cmd := exec.Command(program, req.Args...)
-	cmd.Dir = req.Pwd
-	cmd.Env = req.Env
-	cmd.Stdout, cmd.Stderr = stdout, stderr
+	var cmd *exec.Cmd
+	if req.GetAttachDebugger() {
+		var dbg *debugger
+		cmd, dbg, err = debugCommand(server.Context(), program, req.Args...)
+		if err != nil {
+			return err
+		}
+		defer dbg.Cleanup()
+		// create a sub-context to cancel the startDebugging operation when the process exits.
+		ctx, cancel := context.WithCancel(server.Context())
+		defer cancel()
+		go func() {
+			err := startDebugging(ctx, engineClient, dbg, fmt.Sprintf("Pulumi: Plugin (%s)", req.Name))
+			if err != nil {
+				// kill the plugin if we can't start debugging.
+				logging.Errorf("Unable to start debugging: %v", err)
+				contract.IgnoreError(cmd.Process.Kill())
+			}
+		}()
+	} else {
+		cmd = exec.CommandContext(server.Context(), program, req.Args...)
+		cmd.Dir = req.Pwd
+		cmd.Env = req.Env
+		cmd.Stdout, cmd.Stderr = stdout, stderr
+	}
 
 	if err = cmd.Run(); err != nil {
 		if exiterr, ok := err.(*exec.ExitError); ok {
@@ -1445,4 +1480,49 @@ func (host *goLanguageHost) Handshake(
 	}
 
 	return &pulumirpc.LanguageHandshakeResponse{}, nil
+}
+
+func (host *goLanguageHost) Link(
+	ctx context.Context, req *pulumirpc.LinkRequest,
+) (*pulumirpc.LinkResponse, error) {
+	// Find the go.mod in the program directory, and add a replace statement to point to the given local dependency.
+	// Currently this _only_ supports "pulumi" for the core SDK.
+
+	path := filepath.Join(req.Info.ProgramDirectory, "go.mod")
+	stat, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat go.mod: %w", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read go.mod: %w", err)
+	}
+	mod, err := modfile.Parse(path, data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse go.mod: %w", err)
+	}
+
+	core, ok := req.LocalDependencies["pulumi"]
+	if !ok {
+		// TODO: support other local dependencies.
+		return nil, status.Errorf(codes.InvalidArgument, "no local dependency for 'pulumi' found")
+	}
+
+	err = mod.AddReplace("github.com/pulumi/pulumi/sdk/v3", "", core, "")
+	if err != nil {
+		return nil, fmt.Errorf("add replace: %w", err)
+	}
+
+	// Write the modified go.mod back to disk.
+	data, err = mod.Format()
+	if err != nil {
+		return nil, fmt.Errorf("format go.mod: %w", err)
+	}
+	err = os.WriteFile(path, data, stat.Mode().Perm())
+	if err != nil {
+		return nil, fmt.Errorf("write go.mod: %w", err)
+	}
+
+	return &pulumirpc.LinkResponse{}, nil
 }

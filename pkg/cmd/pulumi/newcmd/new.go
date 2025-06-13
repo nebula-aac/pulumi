@@ -83,6 +83,7 @@ type newArgs struct {
 	aiLanguage           httpstate.PulumiAILanguage
 	templateMode         bool
 	runtimeOptions       []string
+	remoteStackConfig    bool
 }
 
 func runNew(ctx context.Context, args newArgs) error {
@@ -163,7 +164,7 @@ func runNew(ctx context.Context, args newArgs) error {
 		scope = cmdTemplates.ScopeLocal
 	}
 	templateSource := cmdTemplates.New(ctx,
-		args.templateNameOrURL, scope, workspace.TemplateKindPulumiProject, args.interactive)
+		args.templateNameOrURL, scope, workspace.TemplateKindPulumiProject)
 	defer func() { contract.IgnoreError(templateSource.Close()) }()
 
 	if args.templateNameOrURL == "" {
@@ -376,8 +377,8 @@ func runNew(ctx context.Context, args newArgs) error {
 
 	// Create the stack, if needed.
 	if !args.generateOnly && s == nil {
-		if s, err = PromptAndCreateStack(ctx, ws, b, args.prompt,
-			args.stack, root, true /*setCurrent*/, args.yes, opts, args.secretsProvider); err != nil {
+		if s, err = PromptAndCreateStack(ctx, cmdutil.Diag(), ws, b, args.prompt,
+			args.stack, root, true /*setCurrent*/, args.yes, opts, args.secretsProvider, args.remoteStackConfig); err != nil {
 			return err
 		}
 		// The backend will print "Created stack '<stack>'" on success.
@@ -422,6 +423,7 @@ func runNew(ctx context.Context, args newArgs) error {
 	if !args.generateOnly {
 		err = HandleConfig(
 			ctx,
+			cmdutil.Diag(),
 			ssml,
 			ws,
 			args.prompt,
@@ -492,9 +494,6 @@ func isInteractive() bool {
 }
 
 // NewNewCmd creates a New command with default dependencies.
-// Intentionally disabling here for cleaner err declaration/assignment.
-//
-//nolint:vetshadow
 func NewNewCmd() *cobra.Command {
 	args := newArgs{
 		prompt:               ui.PromptForValue,
@@ -508,7 +507,7 @@ func NewNewCmd() *cobra.Command {
 			scope = cmdTemplates.ScopeLocal
 		}
 		// Attempt to retrieve available templates.
-		s := cmdTemplates.New(ctx, "", scope, workspace.TemplateKindPulumiProject, args.interactive)
+		s := cmdTemplates.New(ctx, "", scope, workspace.TemplateKindPulumiProject)
 		t, err := s.Templates()
 		return t, s, err
 	}
@@ -667,6 +666,12 @@ func NewNewCmd() *cobra.Command {
 		&args.runtimeOptions, "runtime-options", []string{},
 		"Additional options for the language runtime (format: key1=value1,key2=value2)",
 	)
+
+	cmd.PersistentFlags().BoolVar(
+		&args.remoteStackConfig, "remote-stack-config", false,
+		"Store stack configuration remotely",
+	)
+	_ = cmd.PersistentFlags().MarkHidden("remote-stack-config")
 
 	return cmd
 }

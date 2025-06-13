@@ -7,8 +7,6 @@ import (
 	"os"
 	"reflect"
 
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
@@ -19,40 +17,35 @@ type analyzer struct {
 }
 
 func (a *analyzer) Handshake(ctx context.Context, req *pulumirpc.AnalyzerHandshakeRequest) (*pulumirpc.AnalyzerHandshakeResponse, error) {
-	if req.StackConfiguration.Stack != "test-stack" {
-		return nil, fmt.Errorf("expected stack to be test-stack, got %s", req.StackConfiguration.Stack)
+	return &pulumirpc.AnalyzerHandshakeResponse{}, nil
+}
+
+func (a *analyzer) StackConfigure(ctx context.Context, req *pulumirpc.AnalyzerStackConfigureRequest) (*pulumirpc.AnalyzerStackConfigureResponse, error) {
+	if req.Stack != "test-stack" {
+		return nil, fmt.Errorf("expected stack to be test-stack, got %s", req.Stack)
 	}
-	if req.StackConfiguration.Project != "test-project" {
-		return nil, fmt.Errorf("expected project to be test-project, got %s", req.StackConfiguration.Project)
+	if req.Project != "test-project" {
+		return nil, fmt.Errorf("expected project to be test-project, got %s", req.Project)
 	}
-	if req.StackConfiguration.Organization != "test-org" {
-		return nil, fmt.Errorf("expected organization to be test-org, got %s", req.StackConfiguration.Organization)
+	if req.Organization != "test-org" {
+		return nil, fmt.Errorf("expected organization to be test-org, got %s", req.Organization)
 	}
-	if !req.StackConfiguration.DryRun {
+	if !req.DryRun {
 		return nil, fmt.Errorf("expected dry run to be true, got false")
 	}
 
-	actualConfig, err := plugin.UnmarshalProperties(req.StackConfiguration.Config, plugin.MarshalOptions{
-		KeepSecrets: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	expectedConfig := map[string]string{
+		"test-project:bool":   "true",
+		"test-project:float":  "1.5",
+		"test-project:string": "hello",
+		"test-project:obj":    "{\"key\":\"value\"}",
 	}
 
-	expectedConfig := resource.PropertyMap{
-		"test-project:bool":   resource.NewBoolProperty(true),
-		"test-project:float":  resource.NewNumberProperty(1.5),
-		"test-project:string": resource.NewStringProperty("hello"),
-		"test-project:obj": resource.NewObjectProperty(resource.PropertyMap{
-			"key": resource.NewStringProperty("value"),
-		}),
+	if !reflect.DeepEqual(req.Config, expectedConfig) {
+		return nil, fmt.Errorf("expected config to be %v, got %v", expectedConfig, req.Config)
 	}
 
-	if !actualConfig.DeepEquals(expectedConfig) {
-		return nil, fmt.Errorf("expected config to be %v, got %v", expectedConfig, actualConfig)
-	}
-
-	return &pulumirpc.AnalyzerHandshakeResponse{}, nil
+	return &pulumirpc.AnalyzerStackConfigureResponse{}, nil
 }
 
 func main() {
@@ -68,7 +61,7 @@ func main() {
 		"test-project:bool":   "true",
 		"test-project:float":  "1.5",
 		"test-project:string": "hello",
-		"test-project:obj":    "{\"key\":\"value\"}",
+		"test-project:obj":    "{\"key\": \"value\"}",
 	}
 	if !reflect.DeepEqual(actual, expect) {
 		fmt.Printf("fatal: expected config to be %v, got %v\n", expect, actual)

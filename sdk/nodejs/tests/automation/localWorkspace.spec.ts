@@ -927,7 +927,11 @@ describe("LocalWorkspace", () => {
         const suffix = `int_test${getTestSuffix()}`;
 
         const stackName = fullyQualifiedStackName(getTestOrg(), "inline_node", suffix);
-        const shortName = getTestOrg() + "/" + suffix;
+        let shortName = getTestOrg() + "/" + suffix;
+        if (!process.env.PULUMI_ACCESS_TOKEN) {
+            // If we are running with a filestate backend, there's no prefix in the name
+            shortName = suffix;
+        }
 
         const stackRenamed = stackName + "_renamed";
         const shortRenamed = shortName + "_renamed";
@@ -953,13 +957,18 @@ describe("LocalWorkspace", () => {
         assert.strictEqual(returned, `Renamed ${shortName} to ${shortRenamed}\n`);
         assert.strictEqual(after?.name, shortRenamed);
 
-        assert.strictEqual(renameRes.summary.kind, "rename");
+        if (process.env.PULUMI_ACCESS_TOKEN) {
+            // TODO: We don't have the right summary.kind for rename operations in the filestate backend.
+            assert.strictEqual(renameRes.summary.kind, "rename");
+        }
         assert.strictEqual(renameRes.summary.result, "succeeded");
 
         // pulumi destroy
         const destroyRes = await stack.destroy({ userAgent });
         assert.strictEqual(destroyRes.summary.kind, "destroy");
         assert.strictEqual(destroyRes.summary.result, "succeeded");
+
+        await stack.workspace.removeStack(stackRenamed);
     });
     it(`refreshes with refresh option`, async () => {
         // We create a simple program, and scan the output for an indication
@@ -988,6 +997,36 @@ describe("LocalWorkspace", () => {
 
         const destroyRes = await stack.destroy({ userAgent, refresh });
         assert.match(destroyRes.stdout, /refreshing/);
+    });
+    it(`operations accept configFile option`, async () => {
+        // We are testing that the configFile option is accepted by the operations.
+
+        const configPath = upath.joinSafe(__dirname, "data", "yaml", "Pulumi.local.yaml");
+
+        const program = async () => {
+            const config = new Config();
+            return {
+                plain: config.get("plain"),
+            };
+        };
+        const projectName = "inline_node";
+        const stackName = fullyQualifiedStackName(getTestOrg(), projectName, `configfile_test${getTestSuffix()}`);
+        const stack = await LocalWorkspace.createStack(
+            { stackName, projectName, program },
+            withTestBackend({}, "inline_node"),
+        );
+        await stack.up({ userAgent, configFile: configPath });
+        const outputs = await stack.outputs();
+        assert.strictEqual(outputs["plain"].value, "plain");
+        const previewRes = await stack.preview({ userAgent, configFile: configPath });
+        assert.strictEqual(previewRes.changeSummary.same, 1);
+        const refRes = await stack.refresh({ userAgent, configFile: configPath });
+        assert.strictEqual(refRes.summary.kind, "refresh");
+        assert.strictEqual(refRes.summary.result, "succeeded");
+        const destroyRes = await stack.destroy({ userAgent, configFile: configPath });
+        assert.strictEqual(destroyRes.summary.kind, "destroy");
+        assert.strictEqual(destroyRes.summary.result, "succeeded");
+        await stack.workspace.removeStack(stackName);
     });
     it(`destroys an inline program with excludeProtected`, async () => {
         const program = async () => {

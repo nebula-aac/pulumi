@@ -89,7 +89,14 @@ func InstallPackage(ws pkgWorkspace.Context, pctx *plugin.Context, language, roo
 	}
 
 	// Link the package to the project
-	if err := LinkPackage(ws, language, root, pkg, out); err != nil {
+	if err := LinkPackage(&LinkPackageContext{
+		Workspace: ws,
+		Language:  language,
+		Root:      root,
+		Pkg:       pkg,
+		Out:       out,
+		Install:   true,
+	}); err != nil {
 		return nil, err
 	}
 
@@ -104,9 +111,10 @@ func newPackageAddCmd() *cobra.Command {
 		Short: "Add a package to your Pulumi project",
 		Long: `Add a package to your Pulumi project.
 
-This command locally generates an SDK in the currently selected Pulumi language
-and prints instructions on how to link it into your project. The SDK is based on
-a Pulumi package schema extracted from a given resource plugin or provided
+This command locally generates an SDK in the currently selected Pulumi language,
+adds the package to your project configuration file (Pulumi.yaml), and prints
+instructions on how to link it into your project. The SDK is based on a Pulumi
+package schema extracted from a given resource plugin or provided
 directly.
 
 The <provider> argument can be specified in one of the following ways:
@@ -157,7 +165,7 @@ from the parameters, as in:
 				return err
 			}
 			sink := cmdutil.Diag()
-			pctx, err := plugin.NewContext(sink, sink, nil, nil, wd, nil, false, nil)
+			pctx, err := plugin.NewContext(cmd.Context(), sink, sink, nil, nil, wd, nil, false, nil)
 			if err != nil {
 				return err
 			}
